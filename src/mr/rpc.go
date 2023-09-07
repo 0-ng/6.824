@@ -22,8 +22,41 @@ type ExampleReply struct {
 	Y int
 }
 
-// Add your RPC definitions here.
+type GetTaskArgs struct {
+}
 
+type TaskType int64
+
+const (
+	Waiting TaskType = 0
+	Map     TaskType = 1
+	Reduce  TaskType = 2
+	Done    TaskType = 3
+)
+
+type GetTaskReply struct {
+	FileName       string
+	ReduceKey      string
+	ReduceKeyFiles []string
+	TaskType       TaskType
+}
+
+type DoneTaskArgs struct {
+	FileName string
+	KeyFiles []struct {
+		Key      string
+		FileName string
+	}
+
+	ReduceKey string
+
+	TaskType TaskType
+}
+
+type DoneTaskReply struct {
+}
+
+// Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

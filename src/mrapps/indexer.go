@@ -37,3 +37,7 @@ func Reduce(key string, values []string) string {
 	sort.Strings(values)
 	return fmt.Sprintf("%d %s", len(values), strings.Join(values, ","))
 }
+
+//a 8 ../pg-being_ernest.txt,../pg-dorian_gray.txt,../pg-frankenstein.txt,../pg-grimm.txt,../pg-huckleberry_finn.txt,../pg-metamorphosis.txt,../pg-sherlock_holmes.txt,../pg-tom_sawyer.txt
+//A 0
+//{"Key":"types","Value":"1 ../pg-frankenstein.txt"}

@@ -113,8 +113,10 @@ fi
 # wait for remaining workers and coordinator to exit.
 wait
 
+
 #########################################################
 # now indexer
+rm -f mr-out-*
 rm -f mr-*
 
 # generate the correct output
@@ -143,9 +145,12 @@ fi
 
 wait
 
+
+
 #########################################################
 echo '***' Starting map parallelism test.
 
+rm -f mr-out-*
 rm -f mr-*
 
 maybe_quiet $TIMEOUT ../mrcoordinator ../pg*txt &
@@ -177,6 +182,7 @@ wait
 #########################################################
 echo '***' Starting reduce parallelism test.
 
+rm -f mr-out-*
 rm -f mr-*
 
 maybe_quiet $TIMEOUT ../mrcoordinator ../pg*txt &
@@ -200,6 +206,7 @@ wait
 #########################################################
 echo '***' Starting job count test.
 
+rm -f mr-out-*
 rm -f mr-*
 
 maybe_quiet $TIMEOUT ../mrcoordinator ../pg*txt  &
@@ -225,6 +232,8 @@ wait
 #########################################################
 # test whether any worker or coordinator exits before the
 # task has completed (i.e., all output files have been finalized)
+
+rm -f mr-out-*
 rm -f mr-*
 
 echo '***' Starting early exit test.
@@ -278,6 +287,7 @@ else
   echo '---' early exit test: FAIL
   failed_any=1
 fi
+rm -f mr-out-*
 rm -f mr-*
 
 #########################################################
