@@ -10,21 +10,31 @@ import "os"
 import "net/rpc"
 import "net/http"
 
+type MapTask struct {
+	FileName string
+	TaskID   int
+}
+
+type ReduceTask struct {
+	TaskID int
+}
+
 type Coordinator struct {
 	// Your definitions here.
 	NReduce int
+	NMap    int
 
-	MapFiles        []string
-	MapRunningFiles []struct {
-		FileName  string
+	MapTaskList        []MapTask
+	MapRunningTaskList []struct {
+		MapTask   MapTask
 		BeginTime time.Time
 	}
 
-	ReduceKeyMap      map[string][]string
-	ReduceKeys        []string
-	ReduceRunningKeys []struct {
-		Key       string
-		BeginTime time.Time
+	//ReduceKeyMap      map[string][]string
+	ReduceTaskList        []ReduceTask
+	ReduceRunningTaskList []struct {
+		ReduceTask ReduceTask
+		BeginTime  time.Time
 	}
 
 	Mutex sync.Mutex
@@ -43,39 +53,38 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
-	if len(c.MapFiles) != 0 {
-		reply.FileName = c.MapFiles[0]
+	if len(c.MapTaskList) != 0 {
+		reply.MapTask = c.MapTaskList[0]
 		reply.TaskType = Map
-		c.MapFiles = c.MapFiles[1:]
-		c.MapRunningFiles = append(c.MapRunningFiles, struct {
-			FileName  string
+		c.MapTaskList = c.MapTaskList[1:]
+		c.MapRunningTaskList = append(c.MapRunningTaskList, struct {
+			MapTask   MapTask
 			BeginTime time.Time
 		}{
-			FileName:  reply.FileName,
+			MapTask:   reply.MapTask,
 			BeginTime: time.Now(),
 		})
 		return nil
 	}
-	if len(c.MapRunningFiles) != 0 {
+	if len(c.MapRunningTaskList) != 0 {
 		reply.TaskType = Waiting
 		return nil
 	}
 
-	if len(c.ReduceKeys) != 0 {
-		reply.ReduceKey = c.ReduceKeys[0]
+	if len(c.ReduceTaskList) != 0 {
+		reply.ReduceTask = c.ReduceTaskList[0]
 		reply.TaskType = Reduce
-		reply.ReduceKeyFiles = c.ReduceKeyMap[reply.ReduceKey]
-		c.ReduceKeys = c.ReduceKeys[1:]
-		c.ReduceRunningKeys = append(c.ReduceRunningKeys, struct {
-			Key       string
-			BeginTime time.Time
+		c.ReduceTaskList = c.ReduceTaskList[1:]
+		c.ReduceRunningTaskList = append(c.ReduceRunningTaskList, struct {
+			ReduceTask ReduceTask
+			BeginTime  time.Time
 		}{
-			Key:       reply.ReduceKey,
-			BeginTime: time.Now(),
+			ReduceTask: reply.ReduceTask,
+			BeginTime:  time.Now(),
 		})
 		return nil
 	}
-	if len(c.ReduceRunningKeys) != 0 {
+	if len(c.ReduceRunningTaskList) != 0 {
 		reply.TaskType = Waiting
 		return nil
 	}
@@ -89,28 +98,27 @@ func (c *Coordinator) DoneTask(args *DoneTaskArgs, reply *DoneTaskReply) error {
 	defer c.Mutex.Unlock()
 	switch args.TaskType {
 	case Map:
-		for _, file := range args.KeyFiles {
-			if _, ok := c.ReduceKeyMap[file.Key]; !ok {
-				c.ReduceKeyMap[file.Key] = make([]string, 0)
-			}
-			c.ReduceKeyMap[file.Key] = append(c.ReduceKeyMap[file.Key], file.FileName)
-			c.ReduceKeys = append(c.ReduceKeys, file.Key)
-		}
-		for i := range c.MapRunningFiles {
-			if c.MapRunningFiles[i].FileName == args.FileName {
-				c.MapRunningFiles = append(c.MapRunningFiles[:i], c.MapRunningFiles[i+1:]...)
+		for i := range c.MapRunningTaskList {
+			if c.MapRunningTaskList[i].MapTask == args.MapTask {
+				c.MapRunningTaskList = append(c.MapRunningTaskList[:i], c.MapRunningTaskList[i+1:]...)
 				break
 			}
 		}
 	case Reduce:
-		for i := range c.ReduceRunningKeys {
-			if c.ReduceRunningKeys[i].Key == args.ReduceKey {
-				c.ReduceRunningKeys = append(c.ReduceRunningKeys[:i], c.ReduceRunningKeys[i+1:]...)
+		for i := range c.ReduceRunningTaskList {
+			if c.ReduceRunningTaskList[i].ReduceTask == args.ReduceTask {
+				c.ReduceRunningTaskList = append(c.ReduceRunningTaskList[:i], c.ReduceRunningTaskList[i+1:]...)
 				break
 			}
 		}
 
 	}
+	return nil
+}
+
+func (c *Coordinator) GetTaskCnt(args *GetTaskCntArgs, reply *GetTaskCntReply) error {
+	reply.NReduce = c.NReduce
+	reply.NMap = c.NMap
 	return nil
 }
 
@@ -133,10 +141,10 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
-	//fmt.Println("still has ", len(c.MapFiles), len(c.MapRunningFiles),
-	//	len(c.ReduceKeys), len(c.ReduceRunningKeys))
-	return len(c.MapFiles) == 0 && len(c.MapRunningFiles) == 0 &&
-		len(c.ReduceKeys) == 0 && len(c.ReduceRunningKeys) == 0
+	//fmt.Println("still has ", len(c.MapTaskList), len(c.MapRunningTaskList),
+	//	len(c.ReduceTaskList), len(c.ReduceRunningTaskList))
+	return len(c.MapTaskList) == 0 && len(c.MapRunningTaskList) == 0 &&
+		len(c.ReduceTaskList) == 0 && len(c.ReduceRunningTaskList) == 0
 }
 
 // create a Coordinator.
@@ -144,10 +152,24 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		MapFiles:     files,
-		NReduce:      nReduce,
-		ReduceKeyMap: map[string][]string{},
-		ReduceKeys:   []string{},
+		NReduce:     nReduce,
+		NMap:        len(files),
+		MapTaskList: make([]MapTask, 0, len(files)),
+		MapRunningTaskList: make([]struct {
+			MapTask   MapTask
+			BeginTime time.Time
+		}, 0),
+		ReduceTaskList: make([]ReduceTask, 0),
+		ReduceRunningTaskList: make([]struct {
+			ReduceTask ReduceTask
+			BeginTime  time.Time
+		}, 0),
+	}
+	for i := range files {
+		c.MapTaskList = append(c.MapTaskList, MapTask{TaskID: i, FileName: files[i]})
+	}
+	for i := 0; i < nReduce; i++ {
+		c.ReduceTaskList = append(c.ReduceTaskList, ReduceTask{TaskID: i})
 	}
 
 	// Your code here.
@@ -162,32 +184,32 @@ func (c *Coordinator) checkRunningTask() {
 	for {
 		time.Sleep(time.Second)
 		c.Mutex.Lock()
-		newMapRunningFiles := make([]struct {
-			FileName  string
+
+		newMapRunningTaskList := make([]struct {
+			MapTask   MapTask
 			BeginTime time.Time
 		}, 0)
-
-		newReduceRunningKeys := make([]struct {
-			Key       string
-			BeginTime time.Time
+		newReduceRunningTaskList := make([]struct {
+			ReduceTask ReduceTask
+			BeginTime  time.Time
 		}, 0)
 
-		for i := range c.MapRunningFiles {
-			if time.Now().Sub(c.MapRunningFiles[i].BeginTime) < 10*time.Second {
-				newMapRunningFiles = append(newMapRunningFiles, c.MapRunningFiles[i])
+		for i := range c.MapRunningTaskList {
+			if time.Now().Sub(c.MapRunningTaskList[i].BeginTime) < 10*time.Second {
+				newMapRunningTaskList = append(newMapRunningTaskList, c.MapRunningTaskList[i])
 			} else {
-				c.MapFiles = append(c.MapFiles, c.MapRunningFiles[i].FileName)
+				c.MapTaskList = append(c.MapTaskList, c.MapRunningTaskList[i].MapTask)
 			}
 		}
-		for i := range c.ReduceRunningKeys {
-			if time.Now().Sub(c.ReduceRunningKeys[i].BeginTime) < 10*time.Second {
-				newReduceRunningKeys = append(newReduceRunningKeys, c.ReduceRunningKeys[i])
+		for i := range c.ReduceRunningTaskList {
+			if time.Now().Sub(c.ReduceRunningTaskList[i].BeginTime) < 10*time.Second {
+				newReduceRunningTaskList = append(newReduceRunningTaskList, c.ReduceRunningTaskList[i])
 			} else {
-				c.ReduceKeys = append(c.ReduceKeys, c.ReduceRunningKeys[i].Key)
+				c.ReduceTaskList = append(c.ReduceTaskList, c.ReduceRunningTaskList[i].ReduceTask)
 			}
 		}
-		c.MapRunningFiles = newMapRunningFiles
-		c.ReduceRunningKeys = newReduceRunningKeys
+		c.MapRunningTaskList = newMapRunningTaskList
+		c.ReduceRunningTaskList = newReduceRunningTaskList
 		c.Mutex.Unlock()
 	}
 }

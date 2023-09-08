@@ -32,6 +32,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// Your worker implementation here.
 
+	args := GetTaskCntArgs{}
+	reply := GetTaskCntReply{}
+	ok := call("Coordinator.GetTaskCnt", &args, &reply)
+	if !ok {
+		return
+	}
+	NReduce := reply.NReduce
+	NMap := reply.NMap
+
 	// uncomment to send the Example RPC to the coordinator.
 	for {
 		args := GetTaskArgs{}
@@ -44,7 +53,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		case Waiting:
 			time.Sleep(time.Second)
 		case Map:
-			//fmt.Println("receive", reply.FileName)
+			//fmt.Println("receive", reply.MapTask)
 			file, err := os.Open(reply.FileName)
 			if err != nil {
 				log.Fatalf("cannot open %v", reply.FileName)
@@ -54,26 +63,16 @@ func Worker(mapf func(string, string) []KeyValue,
 				log.Fatalf("cannot read %v", reply.FileName)
 			}
 			file.Close()
-			kva := mapf(reply.FileName, string(content))
 			fc := map[string]*os.File{}
-			keyFiles := make([]struct {
-				Key      string
-				FileName string
-			}, 0)
+			for i := 0; i < NReduce; i++ {
+				oname := fmt.Sprintf("mr-%v-%v", reply.MapTask.TaskID, i)
+				ofile, _ := os.Create(oname)
+				fc[oname] = ofile
+			}
+
+			kva := mapf(reply.FileName, string(content))
 			for _, kv := range kva {
-				oname := fmt.Sprintf("mr-%v-%v", ihash(reply.FileName), ihash(kv.Key))
-				if _, ok := fc[oname]; !ok {
-					//fmt.Println("open", oname)
-					ofile, _ := os.Create(oname)
-					fc[oname] = ofile
-					keyFiles = append(keyFiles, struct {
-						Key      string
-						FileName string
-					}{
-						Key:      kv.Key,
-						FileName: oname,
-					})
-				}
+				oname := fmt.Sprintf("mr-%v-%v", reply.MapTask.TaskID, ihash(kv.Key)%NReduce)
 				enc := json.NewEncoder(fc[oname])
 				_ = enc.Encode(&kv)
 			}
@@ -82,8 +81,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 			doneArgs := DoneTaskArgs{
-				FileName: reply.FileName,
-				KeyFiles: keyFiles,
+				MapTask:  reply.MapTask,
 				TaskType: Map,
 			}
 
@@ -99,33 +97,50 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 
 		case Reduce:
-			var ret KeyValue
-			ret.Key = reply.ReduceKey
-			kvs := []string{}
-			for _, fileName := range reply.ReduceKeyFiles {
-				file, err := os.Open(fileName)
-				if err != nil {
-					log.Fatalf("cannot open %v", fileName)
-				}
-				dec := json.NewDecoder(file)
+			vlist := make(ByKey, 0)
+			for i := 0; i < NMap; i++ {
+				oname := fmt.Sprintf("mr-%v-%v", i, reply.ReduceTask.TaskID)
+				ofile, _ := os.Open(oname)
+				dec := json.NewDecoder(ofile)
 				for {
 					var kv KeyValue
 					if err := dec.Decode(&kv); err != nil {
 						break
 					}
-					kvs = append(kvs, kv.Value)
+					vlist = append(vlist, kv)
 				}
-				file.Close()
+				_ = ofile.Close()
 			}
-			ret.Value = reducef(ret.Key, kvs)
-			oname := fmt.Sprintf("mr-out-%v", ihash(ret.Key))
+			sort.Sort(vlist)
+
+			vvKey := ""
+			vvlist := make([]string, 0)
+
+			oname := fmt.Sprintf("mr-out-%v", reply.ReduceTask.TaskID)
 			ofile, _ := os.Create(oname)
-			fmt.Fprintf(ofile, "%v %v\n", ret.Key, ret.Value)
+
+			for i := range vlist {
+				if vvKey == vlist[i].Key || vvKey == "" {
+					vvKey = vlist[i].Key
+					vvlist = append(vvlist, vlist[i].Value)
+					continue
+				}
+				value := reducef(vvKey, vvlist)
+				fmt.Fprintf(ofile, "%v %v\n", vvKey, value)
+
+				vvKey = vlist[i].Key
+				vvlist = []string{vlist[i].Value}
+			}
+			if len(vvlist) != 0 {
+				value := reducef(vvKey, vvlist)
+				fmt.Fprintf(ofile, "%v %v\n", vvKey, value)
+			}
+
 			ofile.Close()
 
 			doneArgs := DoneTaskArgs{
-				ReduceKey: ret.Key,
-				TaskType:  Reduce,
+				ReduceTask: reply.ReduceTask,
+				TaskType:   Reduce,
 			}
 			doneReply := DoneTaskReply{}
 			for i := 0; i < 3; i++ {

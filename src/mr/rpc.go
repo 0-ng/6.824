@@ -35,25 +35,26 @@ const (
 )
 
 type GetTaskReply struct {
-	FileName       string
-	ReduceKey      string
-	ReduceKeyFiles []string
-	TaskType       TaskType
+	MapTask
+	ReduceTask
+	TaskType TaskType
 }
 
 type DoneTaskArgs struct {
-	FileName string
-	KeyFiles []struct {
-		Key      string
-		FileName string
-	}
-
-	ReduceKey string
-
+	MapTask
+	ReduceTask
 	TaskType TaskType
 }
 
 type DoneTaskReply struct {
+}
+
+type GetTaskCntArgs struct {
+}
+
+type GetTaskCntReply struct {
+	NReduce int
+	NMap    int
 }
 
 // Add your RPC definitions here.
