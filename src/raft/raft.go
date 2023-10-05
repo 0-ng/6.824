@@ -347,7 +347,7 @@ func (rf *Raft) heartBeat() {
 			DPrintf("[heartBeat not ok]id=%v, args: %+v, reply: %+v\n", server, args, reply)
 		}(server)
 	}
-	time.Sleep(1000 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
