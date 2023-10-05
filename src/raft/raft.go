@@ -315,10 +315,14 @@ func (rf *Raft) ticker() {
 		if isLeader {
 			rf.heartBeat()
 		} else {
+			rf.mu.Lock()
 			if rf.expired() {
+				rf.mu.Unlock()
 				if rf.election() {
 					rf.heartBeat()
 				}
+			} else {
+				rf.mu.Unlock()
 			}
 		}
 	}
@@ -351,7 +355,8 @@ func (rf *Raft) heartBeat() {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if int(2*(cnt+1)) < len(rf.peers) {
+
+	if int(2*(atomic.LoadInt32(&cnt)+1)) < len(rf.peers) {
 		DPrintf("id=%v lose leader cnt=%v\n", rf.me, cnt)
 		rf.LeaderID = -1
 	}
@@ -396,7 +401,7 @@ func (rf *Raft) election() bool {
 	time.Sleep(100 * time.Millisecond)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if int(2*(cnt+1)) >= len(rf.peers) {
+	if int(2*(atomic.LoadInt32(&cnt)+1)) >= len(rf.peers) {
 		if ct == rf.CurrentTerm {
 			DPrintf("aha~ id=%v\n", rf.me)
 			rf.LeaderID = rf.me
