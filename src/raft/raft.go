@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -353,19 +352,19 @@ func (rf *Raft) heartBeat() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	if int(2*(cnt+1)) < len(rf.peers) {
-		log.Printf("id=%v lose leader cnt=%v\n", rf.me, cnt)
+		DPrintf("id=%v lose leader cnt=%v\n", rf.me, cnt)
 		rf.LeaderID = -1
 	}
 }
 func (rf *Raft) expired() bool {
-	return time.Now().Sub(rf.LastHeartBeatTime) > (time.Duration(1000+(rand.Int63()%300)) * time.Millisecond)
+	return time.Now().Sub(rf.LastHeartBeatTime) > (time.Duration(1500) * time.Millisecond)
 }
 
 func (rf *Raft) election() bool {
 	rf.mu.Lock()
 	if !rf.expired() {
 		rf.mu.Unlock()
-		log.Printf("id=%v has new leader\n", rf.me)
+		DPrintf("id=%v has new leader\n", rf.me)
 		return false
 	}
 	rf.CurrentTerm += 1
@@ -399,14 +398,14 @@ func (rf *Raft) election() bool {
 	defer rf.mu.Unlock()
 	if int(2*(cnt+1)) >= len(rf.peers) {
 		if ct == rf.CurrentTerm {
-			log.Println("aha~", rf.me)
+			DPrintf("aha~ id=%v\n", rf.me)
 			rf.LeaderID = rf.me
 			return true
 		}
-		log.Printf("id=%v, ct != rf.CurrentTerm\n", rf.me)
+		DPrintf("id=%v, ct != rf.CurrentTerm\n", rf.me)
 		return false
 	}
-	log.Printf("id=%v, not enough vote\n", rf.me)
+	DPrintf("id=%v, not enough vote\n", rf.me)
 	return false
 }
 

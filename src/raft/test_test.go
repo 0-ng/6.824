@@ -9,13 +9,22 @@ package raft
 //
 
 import (
-	"fmt"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+const TDebug = false
+
+func TDPrintf(format string, a ...interface{}) (n int, err error) {
+	if TDebug {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -43,7 +52,7 @@ func TestInitialElection2A(t *testing.T) {
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
 	if term1 != term2 {
-		fmt.Printf("warning: term changed even though there were no failures")
+		TDPrintf("warning: term changed even though there were no failures")
 	}
 
 	// there should still be a leader.
@@ -62,78 +71,79 @@ func TestReElection2A(t *testing.T) {
 	leader1 := cfg.checkOneLeader()
 
 	// if the leader disconnects, a new one should be elected.
-	fmt.Printf("leader is %v\n", leader1)
+	TDPrintf("leader is %v\n", leader1)
 	cfg.disconnect(leader1)
-	fmt.Printf("disconnect leader %v\n", leader1)
+	TDPrintf("disconnect leader %v\n", leader1)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader. and the old leader
 	// should switch to follower.
 	cfg.connect(leader1)
-	fmt.Printf("connect %v\n", leader1)
+	TDPrintf("connect %v\n", leader1)
 	leader2 := cfg.checkOneLeader()
 
 	// if there's no quorum, no new leader should
 	// be elected.
 	cfg.disconnect(leader2)
-	fmt.Printf("disconnect %v\n", leader2)
+	TDPrintf("disconnect %v\n", leader2)
 	cfg.disconnect((leader2 + 1) % servers)
-	fmt.Printf("disconnect %v\n", (leader2+1)%servers)
+	TDPrintf("disconnect %v\n", (leader2+1)%servers)
 	time.Sleep(2 * RaftElectionTimeout)
 
 	// check that the one connected server
 	// does not think it is the leader.
 	cfg.checkNoLeader()
-	fmt.Printf("check no leader\n")
+	TDPrintf("check no leader\n")
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
-	fmt.Printf("connect %v\n", (leader2+1)%servers)
+	TDPrintf("connect %v\n", (leader2+1)%servers)
 	cfg.checkOneLeader()
-	fmt.Printf("check one leader\n")
+	TDPrintf("check one leader\n")
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
-	fmt.Printf("connect %v\n", leader2)
+	TDPrintf("connect %v\n", leader2)
 	cfg.checkOneLeader()
-	fmt.Printf("check one leader\n")
+	TDPrintf("check one leader\n")
 
 	cfg.end()
 }
 
-//func TestManyElections2A(t *testing.T) {
-//	servers := 7
-//	cfg := make_config(t, servers, false, false)
-//	defer cfg.cleanup()
-//
-//	cfg.begin("Test (2A): multiple elections")
-//
-//	cfg.checkOneLeader()
-//
-//	iters := 10
-//	for ii := 1; ii < iters; ii++ {
-//		// disconnect three nodes
-//		i1 := rand.Int() % servers
-//		i2 := rand.Int() % servers
-//		i3 := rand.Int() % servers
-//		cfg.disconnect(i1)
-//		cfg.disconnect(i2)
-//		cfg.disconnect(i3)
-//
-//		// either the current leader should still be alive,
-//		// or the remaining four should elect a new one.
-//		cfg.checkOneLeader()
-//
-//		cfg.connect(i1)
-//		cfg.connect(i2)
-//		cfg.connect(i3)
-//	}
-//
-//	cfg.checkOneLeader()
-//
-//	cfg.end()
-//}
+func TestManyElections2A(t *testing.T) {
+	servers := 7
+	cfg := make_config(t, servers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2A): multiple elections")
+
+	cfg.checkOneLeader()
+
+	iters := 10
+	for ii := 1; ii < iters; ii++ {
+		// disconnect three nodes
+		i1 := rand.Int() % servers
+		i2 := rand.Int() % servers
+		i3 := rand.Int() % servers
+		//log.Printf("disconnect %v %v %v\n", i1, i2, i3)
+		cfg.disconnect(i1)
+		cfg.disconnect(i2)
+		cfg.disconnect(i3)
+
+		// either the current leader should still be alive,
+		// or the remaining four should elect a new one.
+		cfg.checkOneLeader()
+
+		cfg.connect(i1)
+		cfg.connect(i2)
+		cfg.connect(i3)
+	}
+
+	cfg.checkOneLeader()
+
+	cfg.end()
+}
 
 func TestBasicAgree2B(t *testing.T) {
 	servers := 3
