@@ -59,16 +59,17 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	CurrentTerm int
-	VotedFor    *int
-	Log         []string
-	CommitIndex int
-	LastApplied string
-	NextIndex   []string
-	MatchIndex  []string
+	// 2A
+	CurrentTerm   int  // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	VotedFor      *int // candidateId that received vote in current term (or null if none)
+	LeaderID      int
+	ElectionTimer time.Time
 
-	LeaderID          int
-	LastHeartBeatTime time.Time
+	Log         []string // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
+	CommitIndex int      // index of highest log entry known to be committed (initialized to 0, increases monotonically)
+	LastApplied int      // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+	NextIndex   []string // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+	MatchIndex  []string // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 }
 
 // GetState return currentTerm and whether this server
@@ -135,18 +136,27 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term        int `json:"term"`
-	CandidateID int `json:"candidate_id"`
-	//LastLogIndex int `json:"last_log_index"`
-	//LastLogTerm  int `json:"last_log_term"`
+	Term        int `json:"term"`         // candidate’s term
+	CandidateID int `json:"candidate_id"` // candidate requesting vote
+
+	//LastLogIndex int `json:"last_log_index"` // index of candidate’s last log entryindex of candidate’s last log entry
+	//LastLogTerm  int `json:"last_log_term"` // term of candidate’s last log entry
 }
+
+/*
+	Receiver implementation:
+	1. Reply false if term < currentTerm (§5.1)
+
+	2. If votedFor is null or candidateId, and candidate’s log is at
+	least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
+*/
 
 // RequestVoteReply example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term        int  `json:"term"`
-	VoteGranted bool `json:"vote_granted"`
+	Term        int  `json:"term"`         // currentTerm, for candidate to update itself
+	VoteGranted bool `json:"vote_granted"` // true means candidate received vote
 }
 
 // RequestVote example RequestVote RPC handler.
@@ -168,15 +178,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = &args.CandidateID
-		rf.LastHeartBeatTime = time.Now()
+		rf.ElectionTimer = time.Now()
 
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = true
 		return
 	}
+	rf.LeaderID = -1
 	rf.CurrentTerm = args.Term
 	rf.VotedFor = &args.CandidateID
-	rf.LastHeartBeatTime = time.Now()
+	rf.ElectionTimer = time.Now()
 
 	reply.Term = rf.CurrentTerm
 	reply.VoteGranted = true
@@ -222,17 +233,17 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 type AppendEntriesArgs struct {
-	Term     int `json:"term"`
-	LeaderID int `json:"leader_id"`
-	//PrevLogIndex string   `json:"prev_log_index"`
-	//PrevLogTerm  string   `json:"prev_log_term"`
-	//Entries      []string `json:"entries"`
-	//LeaderCommit string   `json:"leader_commit"`
+	Term     int `json:"term"`      // leader’s term
+	LeaderID int `json:"leader_id"` // so follower can redirect clients
+	//PrevLogIndex string   `json:"prev_log_index"` // index of log entry immediately preceding new ones
+	//PrevLogTerm  string   `json:"prev_log_term"` // term of prevLogIndex entry
+	//Entries      []string `json:"entries"` // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	//LeaderCommit string   `json:"leader_commit"` // leader’s commitIndex
 }
 
 type AppendEntriesReply struct {
-	Term    int  `json:"term"`
-	Success bool `json:"success"`
+	Term    int  `json:"term"`    // currentTerm, for leader to update itself
+	Success bool `json:"success"` // true if follower contained entry matching prevLogIndex and prevLogTerm
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -240,14 +251,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer DPrintf("[AppendEntries]id=%v, args: %+v, reply: %+v\n", rf.me, args, reply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.CurrentTerm {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
 		return
 	}
+	// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+	// 4. Append any new entries not already in the log
+	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	rf.CurrentTerm = args.Term
 	rf.LeaderID = args.LeaderID
-	rf.LastHeartBeatTime = time.Now()
+	rf.ElectionTimer = time.Now()
 
 	reply.Term = rf.CurrentTerm
 	reply.Success = true
@@ -273,10 +289,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
+	term, isLeader := rf.GetState()
+	if !isLeader {
+		return index, term, isLeader
+	}
 
 	return index, term, isLeader
 }
@@ -362,7 +379,7 @@ func (rf *Raft) heartBeat() {
 	}
 }
 func (rf *Raft) expired() bool {
-	return time.Now().Sub(rf.LastHeartBeatTime) > (time.Duration(1500) * time.Millisecond)
+	return time.Now().Sub(rf.ElectionTimer) > (time.Duration(1500) * time.Millisecond)
 }
 
 func (rf *Raft) election() bool {
@@ -375,6 +392,7 @@ func (rf *Raft) election() bool {
 	rf.CurrentTerm += 1
 	ct := rf.CurrentTerm
 	rf.VotedFor = &rf.me
+	rf.ElectionTimer = time.Now()
 	rf.mu.Unlock()
 
 	args := &RequestVoteArgs{
