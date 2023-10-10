@@ -17,6 +17,7 @@ import (
 	"time"
 )
 
+//const TDebug = true
 const TDebug = false
 
 func TDPrintf(format string, a ...interface{}) (n int, err error) {
@@ -486,6 +487,7 @@ func TestRejoin2B(t *testing.T) {
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
+	TDPrintf("disconnect %v\n", leader1)
 
 	// make old leader try to agree on some entries
 	cfg.rafts[leader1].Start(102)
@@ -498,14 +500,17 @@ func TestRejoin2B(t *testing.T) {
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
+	TDPrintf("disconnect %v\n", leader2)
 
 	// old leader connected again
 	cfg.connect(leader1)
+	TDPrintf("connect %v\n", leader1)
 
 	cfg.one(104, 2, true)
 
 	// all together now
 	cfg.connect(leader2)
+	TDPrintf("connect %v\n", leader2)
 
 	cfg.one(105, servers, true)
 
@@ -518,8 +523,10 @@ func TestBackup2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
-
-	cfg.one(rand.Int(), servers, true)
+	v := 1
+	//cfg.one(rand.Int(), servers, true)
+	cfg.one(v, servers, true)
+	v += 1
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
@@ -529,7 +536,9 @@ func TestBackup2B(t *testing.T) {
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader1].Start(rand.Int())
+		//cfg.rafts[leader1].Start(rand.Int())
+		cfg.rafts[leader1].Start(v)
+		v += 1
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -544,7 +553,9 @@ func TestBackup2B(t *testing.T) {
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3, true)
+		//cfg.one(rand.Int(), 3, true)
+		cfg.one(v, 3, true)
+		v += 1
 	}
 
 	// now another partitioned leader and one follower
@@ -557,7 +568,9 @@ func TestBackup2B(t *testing.T) {
 
 	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader2].Start(rand.Int())
+		//cfg.rafts[leader2].Start(rand.Int())
+		cfg.rafts[leader2].Start(v)
+		v += 1
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -572,14 +585,17 @@ func TestBackup2B(t *testing.T) {
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3, true)
+		//cfg.one(rand.Int(), 3, true)
+		cfg.one(v, 3, true)
+		v += 1
 	}
 
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
-	cfg.one(rand.Int(), servers, true)
+	//cfg.one(rand.Int(), servers, true)
+	cfg.one(v, servers, true)
 
 	cfg.end()
 }

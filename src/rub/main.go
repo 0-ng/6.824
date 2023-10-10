@@ -1,12 +1,13 @@
 package main
 
-import (
-	"fmt"
-	"math/rand"
-)
+import "fmt"
 
 func main() {
-	lowerLimit := 1
-	upperLimit := 10
-	fmt.Println(rand.Int()%(upperLimit-lowerLimit) + lowerLimit)
+	v := []int64{12, 1231, 12312312, 3123}
+	a := 5
+	b := 3
+	if false {
+		a = 2
+	}
+	fmt.Println(v[a:b])
 }

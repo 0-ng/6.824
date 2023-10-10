@@ -165,11 +165,16 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 		} else {
 			cfg.mu.Lock()
 			err_msg, prevok := cfg.checkLogs(i, m)
+			//fmt.Printf("%v apply %+v, err_msg: %v, prevok: %v\n", i, m, err_msg, prevok)
 			cfg.mu.Unlock()
 			if m.CommandIndex > 1 && prevok == false {
 				err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if err_msg != "" {
+				for j := 0; j < cfg.n; j++ {
+					fmt.Printf("id=%v, logs %v\n", j, cfg.logs[j])
+
+				}
 				log.Fatalf("apply error: %v", err_msg)
 				cfg.applyErr[i] = err_msg
 				// keep reading after error so that Raft doesn't block
@@ -534,6 +539,10 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 	}
 	nd, cmd := cfg.nCommitted(index)
 	if nd < n {
+		for i := range cfg.logs {
+			fmt.Println(i, cfg.logs[i])
+		}
+
 		cfg.t.Fatalf("only %d decided for index %d; wanted %d",
 			nd, index, n)
 	}
