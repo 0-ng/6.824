@@ -174,17 +174,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 		return
-	} else if args.LastLogTerm == rf.Log[len(rf.Log)-1].Term && args.LastLogIndex+1 < len(rf.Log) {
+	}
+	if args.LastLogTerm == rf.Log[len(rf.Log)-1].Term && args.LastLogIndex+1 < len(rf.Log) {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 		return
 	}
-	//if args.LastLogIndex < rf.CommitIndex-1 {
-	//	reply.Term = rf.CurrentTerm
-	//	reply.VoteGranted = false
-	//	return
-	//}
-	//rf.LeaderID = -1
 	rf.VotedFor = &args.CandidateID
 	rf.ElectionTimer = time.Now()
 	rf.CurrentTerm = args.Term
@@ -283,19 +278,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.Log = append(rf.Log, args.Entries[i])
 		}
 	}
-	//if len(args.Entries) != 0 {
-	//	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
-	//	for i := 0; i < len(args.Entries); i++ {
-	//		if args.PrevLogIndex+i+1< len(rf.Log) {
-	//			rf.Log[args.PrevLogIndex+i+1] = args.Entries[i]
-	//		} else {
-	//			rf.Log = append(rf.Log, args.Entries[i])
-	//		}
-	//	}
-	//	//rf.Log = rf.Log[:args.PrevLogIndex+1]
-	//	//// 4. Append any new entries not already in the log
-	//	//rf.Log = append(rf.Log, args.Entries...)
-	//}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	lastNewEntriesIdx := args.PrevLogIndex + len(args.Entries) + 1
@@ -312,7 +294,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				CommandIndex: i,
 			}
 		}
-		//fmt.Println(rf.me, "now commit index", rf.CommitIndex)
 	}
 	rf.CurrentTerm = args.Term
 	rf.LeaderID = args.LeaderID
@@ -364,7 +345,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	rf.Log = append(rf.Log, Entry{Entry: command, Term: term})
 	logLen := len(rf.Log)
-	//fmt.Printf("log len=%v, log=%+v", logLen, rf.Log)
 	ch := make(chan bool, len(rf.peers))
 	rf.mu.Unlock()
 	go func() {
@@ -391,7 +371,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.LeaderID = -1
 			rf.mu.Unlock()
 			DPrintf("%v end with fail\n", rf.me)
-			//return logLen - 1, term, isLeader
 			return
 		}
 		rf.mu.Lock()
@@ -456,7 +435,6 @@ func (rf *Raft) SyncToServer(server, logLen int, ch chan bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if !ok {
-		//fmt.Printf("%v send to %v not ok %v\n", rf.me, server, false)
 		ch <- false
 	} else {
 		rf.mu.Lock()
@@ -499,13 +477,8 @@ func (rf *Raft) ticker() {
 		if isLeader {
 			rf.heartBeat()
 		} else {
-			rf.mu.Lock()
-			v := rf.expired()
-			rf.mu.Unlock()
-			if v {
-				if rf.election() {
-					rf.heartBeat()
-				}
+			if rf.checkExpiredAndElection() {
+				rf.heartBeat()
 			}
 		}
 	}
@@ -544,14 +517,13 @@ func (rf *Raft) heartBeat() {
 	}
 }
 func (rf *Raft) expired() bool {
-	return time.Now().Sub(rf.ElectionTimer) > (time.Duration((rand.Int63()%600)+1000) * time.Millisecond)
+	return time.Since(rf.ElectionTimer) > (time.Duration((rand.Int63()%600)+1000) * time.Millisecond)
 }
 
-func (rf *Raft) election() bool {
+func (rf *Raft) checkExpiredAndElection() bool {
 	rf.mu.Lock()
 	if !rf.expired() {
 		rf.mu.Unlock()
-		DPrintf("[Election]id=%v has new leader\n", rf.me)
 		return false
 	}
 	rf.CurrentTerm += 1
