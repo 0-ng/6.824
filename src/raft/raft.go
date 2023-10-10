@@ -539,7 +539,7 @@ func (rf *Raft) checkExpiredAndElection() bool {
 	rf.mu.Unlock()
 	DPrintf("[Election]id=%v start an election\n", rf.me)
 
-	cnt := int32(0)
+	cnt := 0
 	ch := make(chan int, len(rf.peers))
 	for server := range rf.peers {
 		if server == rf.me {
@@ -572,7 +572,7 @@ func (rf *Raft) checkExpiredAndElection() bool {
 		if v != 2 {
 			rec += 1
 		}
-		if int(2*(cnt+1)) >= len(rf.peers) {
+		if 2*(cnt+1) >= len(rf.peers) {
 			break
 		}
 	}
@@ -584,15 +584,13 @@ func (rf *Raft) checkExpiredAndElection() bool {
 		rf.VotedFor = nil
 		return false
 	}
-	if int(2*(cnt+1)) >= len(rf.peers) {
+	if 2*(cnt+1) >= len(rf.peers) {
 		if ct == rf.CurrentTerm {
 			DPrintf("[Election]aha~ id=%v\n", rf.me)
 			rf.LeaderID = rf.me
-			//rf.CommitIndex = len(rf.Log)
-			//ni := len(rf.Log)
-			ni := rf.CommitIndex
-			for _ = range rf.peers {
-				rf.NextIndex = append(rf.NextIndex, ni)
+			rf.NextIndex = make([]int, len(rf.peers))
+			for i := range rf.peers {
+				rf.NextIndex[i] = rf.CommitIndex
 			}
 			return true
 		}
