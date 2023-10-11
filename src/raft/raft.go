@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.5840/labgob"
+	"bytes"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -96,12 +98,17 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	if rf.VotedFor != nil {
+		e.Encode(*rf.VotedFor)
+	} else {
+		e.Encode(-1)
+	}
+	e.Encode(rf.Log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -111,17 +118,25 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	// Your code here (2C).
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+
+	var CurrentTerm int
+	var VotedFor int
+	var Log []Entry
+	if d.Decode(&CurrentTerm) != nil ||
+		d.Decode(&VotedFor) != nil ||
+		d.Decode(&Log) != nil {
+		DPrintf("decode error\n")
+	} else {
+		rf.CurrentTerm = CurrentTerm
+		if VotedFor != -1 {
+			rf.VotedFor = &VotedFor
+		} else {
+			rf.VotedFor = nil
+		}
+		rf.Log = Log
+	}
 }
 
 // Snapshot the service says it has created a snapshot that has
@@ -156,7 +171,10 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		rf.persist()
+		rf.mu.Unlock()
+	}()
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.CurrentTerm {
@@ -250,7 +268,10 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		rf.persist()
+		rf.mu.Unlock()
+	}()
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.CurrentTerm {
 		reply.Term = rf.CurrentTerm
@@ -344,33 +365,13 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.mu.Lock()
 	rf.Log = append(rf.Log, Entry{Entry: command, Term: term})
+	currentTerm := rf.CurrentTerm
 	logLen := len(rf.Log)
-	ch := make(chan bool, len(rf.peers))
+	rf.persist()
 	rf.mu.Unlock()
+	ch := make(chan AppendEntriesEnum, len(rf.peers))
 	go func() {
-		for server := range rf.peers {
-			if server == rf.me {
-				continue
-			}
-			go func(server int) {
-				rf.SyncToServer(server, logLen, ch)
-			}(server)
-		}
-		cnt := 0
-		for i := 1; i < len(rf.peers); i++ {
-			v := <-ch
-			if v {
-				cnt += 1
-			}
-			if (cnt+1)*2 >= len(rf.peers) {
-				break
-			}
-		}
-		if (cnt+1)*2 < len(rf.peers) {
-			rf.mu.Lock()
-			rf.LeaderID = -1
-			rf.mu.Unlock()
-			DPrintf("%v end with fail\n", rf.me)
+		if !rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch) {
 			return
 		}
 		rf.mu.Lock()
@@ -389,10 +390,17 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return logLen - 1, term, isLeader
 }
 
-func (rf *Raft) SyncToServer(server, logLen int, ch chan bool) {
-	ok := false
+type AppendEntriesEnum int64
+
+const (
+	AppendEntriesEnumDisconnect AppendEntriesEnum = 1
+	AppendEntriesEnumBiggerTerm AppendEntriesEnum = 2
+	AppendEntriesEnumSuccess    AppendEntriesEnum = 3
+)
+
+func (rf *Raft) SyncToServer(server, logLen, currentTerm int) AppendEntriesEnum {
 	start := time.Now()
-	for time.Since(start).Seconds() < 1 && !ok {
+	for time.Since(start).Seconds() < 1 {
 		rf.mu.Lock()
 		id := rf.NextIndex[server]
 		if id > logLen {
@@ -416,31 +424,26 @@ func (rf *Raft) SyncToServer(server, logLen int, ch chan bool) {
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
-			// TODO change to follower
-			if reply.Success {
-				ch <- true
-				ok = true
+			if reply.Term > currentTerm {
+				return AppendEntriesEnumBiggerTerm
+			} else if reply.Success {
+				rf.mu.Lock()
+				rf.NextIndex[server] = logLen
+				rf.mu.Unlock()
+				return AppendEntriesEnumSuccess
 			}
 			break
 		}
 		rf.mu.Lock()
-		if rf.NextIndex[server] <= 1 || ok {
+		if rf.NextIndex[server] <= 1 {
 			rf.mu.Unlock()
-			break
+			return AppendEntriesEnumDisconnect
 		}
-		if !ok {
-			rf.NextIndex[server] -= 1
-		}
+		rf.NextIndex[server] -= 1
 		rf.mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !ok {
-		ch <- false
-	} else {
-		rf.mu.Lock()
-		rf.NextIndex[server] = logLen
-		rf.mu.Unlock()
-	}
+	return AppendEntriesEnumDisconnect
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -477,54 +480,51 @@ func (rf *Raft) ticker() {
 		if isLeader {
 			rf.heartBeat()
 		} else {
-			if rf.checkExpiredAndElection() {
-				rf.heartBeat()
+			stop := false
+			for !stop {
+				switch rf.checkExpiredAndElection() {
+				case UnExpired:
+					stop = true
+				case DisConnect, HaveBiggerTerm, NotEnoughVote:
+					ms := 10 + (rand.Int63() % 50)
+					time.Sleep(time.Duration(ms) * time.Millisecond)
+				case Success:
+					rf.heartBeat()
+					stop = true
+				}
 			}
 		}
 	}
 }
 
 func (rf *Raft) heartBeat() {
-	cnt := int32(0)
-	ch := make(chan bool, len(rf.peers))
+	ch := make(chan AppendEntriesEnum, len(rf.peers))
 	rf.mu.Lock()
 	logLen := len(rf.Log)
+	currentTerm := rf.CurrentTerm
 	rf.mu.Unlock()
-	for server := range rf.peers {
-		if server == rf.me {
-			continue
-		}
-		go func(server int) {
-			rf.SyncToServer(server, logLen, ch)
-		}(server)
-	}
-	for i := 1; i < len(rf.peers); i++ {
-		v := <-ch
-		if v {
-			cnt += 1
-			if int(2*(cnt+1)) >= len(rf.peers) {
-				break
-			}
-		}
-	}
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if int(2*(cnt+1)) < len(rf.peers) {
-		DPrintf("id=%v lose leader cnt=%v\n", rf.me, cnt)
-		rf.LeaderID = -1
-	}
+	rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch)
 }
+
 func (rf *Raft) expired() bool {
 	return time.Since(rf.ElectionTimer) > (time.Duration((rand.Int63()%600)+1000) * time.Millisecond)
 }
 
-func (rf *Raft) checkExpiredAndElection() bool {
+type ElectionResult int64
+
+const (
+	UnExpired      ElectionResult = 1
+	DisConnect     ElectionResult = 2
+	NotEnoughVote  ElectionResult = 3
+	HaveBiggerTerm ElectionResult = 4
+	Success        ElectionResult = 5
+)
+
+func (rf *Raft) checkExpiredAndElection() ElectionResult {
 	rf.mu.Lock()
 	if !rf.expired() {
 		rf.mu.Unlock()
-		return false
+		return UnExpired
 	}
 	rf.CurrentTerm += 1
 	ct := rf.CurrentTerm
@@ -582,24 +582,55 @@ func (rf *Raft) checkExpiredAndElection() bool {
 		DPrintf("[Election]id=%v, connection error\n", rf.me)
 		rf.CurrentTerm -= 1
 		rf.VotedFor = nil
-		return false
+		return DisConnect
 	}
-	if 2*(cnt+1) >= len(rf.peers) {
-		if ct == rf.CurrentTerm {
-			DPrintf("[Election]aha~ id=%v\n", rf.me)
-			rf.LeaderID = rf.me
-			rf.NextIndex = make([]int, len(rf.peers))
-			for i := range rf.peers {
-				rf.NextIndex[i] = rf.CommitIndex
-			}
-			return true
-		}
+	if 2*(cnt+1) < len(rf.peers) {
+		DPrintf("[Election]id=%v, not enough vote\n", rf.me)
+		return NotEnoughVote
+	}
+	if ct != rf.CurrentTerm {
 		DPrintf("[Election]id=%v, ct != rf.CurrentTerm\n", rf.me)
+		return HaveBiggerTerm
+	}
+	DPrintf("[Election]aha~ id=%v\n", rf.me)
+	rf.LeaderID = rf.me
+	rf.NextIndex = make([]int, len(rf.peers))
+	for i := range rf.peers {
+		rf.NextIndex[i] = rf.CommitIndex
+	}
+	return Success
+}
+
+func (rf *Raft) sendAppendEntriesToAllServer(logLen, currentTerm int, ch chan AppendEntriesEnum) bool {
+	for server := range rf.peers {
+		if server == rf.me {
+			continue
+		}
+		go func(server int) {
+			ch <- rf.SyncToServer(server, logLen, currentTerm)
+		}(server)
+	}
+	cnt := 0
+	for i := 1; i < len(rf.peers); i++ {
+		switch <-ch {
+		case AppendEntriesEnumDisconnect:
+		case AppendEntriesEnumBiggerTerm:
+			cnt = -1
+		case AppendEntriesEnumSuccess:
+			cnt += 1
+		}
+		if 2*(cnt+1) >= len(rf.peers) || cnt == -1 {
+			break
+		}
+	}
+	if 2*(cnt+1) < len(rf.peers) {
+		DPrintf("id=%v lose leader cnt=%v\n", rf.me, cnt)
+		rf.mu.Lock()
+		rf.LeaderID = -1
+		rf.mu.Unlock()
 		return false
 	}
-	//rf.CurrentTerm -= 1
-	DPrintf("[Election]id=%v, not enough vote\n", rf.me)
-	return false
+	return true
 }
 
 // Make the service or tester wants to create a Raft server. the ports

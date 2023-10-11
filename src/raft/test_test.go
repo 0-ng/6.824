@@ -769,31 +769,40 @@ func TestPersist22C(t *testing.T) {
 		index++
 
 		leader1 := cfg.checkOneLeader()
-
+		TDPrintf("disconnect %v\n", (leader1+1)%servers)
 		cfg.disconnect((leader1 + 1) % servers)
+		TDPrintf("disconnect %v\n", (leader1+2)%servers)
 		cfg.disconnect((leader1 + 2) % servers)
 
 		cfg.one(10+index, servers-2, true)
 		index++
 
+		TDPrintf("disconnect %v\n", (leader1+0)%servers)
 		cfg.disconnect((leader1 + 0) % servers)
+		TDPrintf("disconnect %v\n", (leader1+3)%servers)
 		cfg.disconnect((leader1 + 3) % servers)
+		TDPrintf("disconnect %v\n", (leader1+4)%servers)
 		cfg.disconnect((leader1 + 4) % servers)
 
 		cfg.start1((leader1+1)%servers, cfg.applier)
 		cfg.start1((leader1+2)%servers, cfg.applier)
+		TDPrintf("connect %v\n", (leader1+1)%servers)
 		cfg.connect((leader1 + 1) % servers)
+		TDPrintf("connect %v\n", (leader1+2)%servers)
 		cfg.connect((leader1 + 2) % servers)
 
 		time.Sleep(RaftElectionTimeout)
 
 		cfg.start1((leader1+3)%servers, cfg.applier)
+		TDPrintf("connect %v\n", (leader1+3)%servers)
 		cfg.connect((leader1 + 3) % servers)
 
 		cfg.one(10+index, servers-2, true)
 		index++
 
+		TDPrintf("connect %v\n", (leader1+4)%servers)
 		cfg.connect((leader1 + 4) % servers)
+		TDPrintf("connect %v\n", (leader1+0)%servers)
 		cfg.connect((leader1 + 0) % servers)
 	}
 
