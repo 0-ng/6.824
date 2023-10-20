@@ -191,11 +191,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.LastLogTerm < rf.Log[len(rf.Log)-1].Term {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
+
+		rf.CurrentTerm = args.Term
 		return
 	}
 	if args.LastLogTerm == rf.Log[len(rf.Log)-1].Term && args.LastLogIndex+1 < len(rf.Log) {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
+
+		rf.CurrentTerm = args.Term
 		return
 	}
 	rf.VotedFor = &args.CandidateID
@@ -282,7 +286,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(rf.Log) <= args.PrevLogIndex || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Term = rf.CurrentTerm
 		reply.Success = false
-		rf.ElectionTimer = time.Now()
+		//rf.ElectionTimer = time.Now()
 		if len(rf.Log) <= args.PrevLogIndex {
 			DPrintf("%v AppendEntries fail, len(rf.Log) <= args.PrevLogIndex, %v, %v\n", rf.me, len(rf.Log), args.PrevLogIndex)
 		} else {
@@ -291,6 +295,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+	//// TODO
+	//rf.CommitIndex
 	for i := 0; i < len(args.Entries); i++ {
 		if args.PrevLogIndex+i+1 < len(rf.Log) {
 			rf.Log[args.PrevLogIndex+i+1] = args.Entries[i]
@@ -375,6 +381,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			return
 		}
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if rf.LeaderID != rf.me {
+			return
+		}
 		if logLen > rf.CommitIndex {
 			for i := rf.CommitIndex; i < logLen; i++ {
 				rf.ApplyCh <- ApplyMsg{
@@ -385,7 +395,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}
 			rf.CommitIndex = logLen
 		}
-		rf.mu.Unlock()
 	}()
 	return logLen - 1, term, isLeader
 }
@@ -402,6 +411,10 @@ func (rf *Raft) SyncToServer(server, logLen, currentTerm int) AppendEntriesEnum 
 	start := time.Now()
 	for time.Since(start).Seconds() < 1 {
 		rf.mu.Lock()
+		if rf.CurrentTerm > currentTerm || rf.LeaderID != rf.me {
+			rf.mu.Unlock()
+			return AppendEntriesEnumBiggerTerm
+		}
 		id := rf.NextIndex[server]
 		if id > logLen {
 			id = logLen
@@ -485,8 +498,11 @@ func (rf *Raft) ticker() {
 				switch rf.checkExpiredAndElection() {
 				case UnExpired:
 					stop = true
-				case DisConnect, HaveBiggerTerm, NotEnoughVote:
+				case NotEnoughVote:
 					ms := 10 + (rand.Int63() % 50)
+					time.Sleep(time.Duration(ms) * time.Millisecond)
+				case DisConnect, HaveBiggerTerm:
+					ms := 30 + (rand.Int63() % 50)
 					time.Sleep(time.Duration(ms) * time.Millisecond)
 				case Success:
 					rf.heartBeat()

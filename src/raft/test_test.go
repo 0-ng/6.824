@@ -11,6 +11,7 @@ package raft
 import (
 	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,17 @@ func TDPrintf(format string, a ...interface{}) (n int, err error) {
 		log.Printf(format, a...)
 	}
 	return
+}
+
+func init() {
+	f, err := os.OpenFile("a.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Panic("打开日志文件异常")
+	}
+	//if f.Truncate(0) != nil {
+	//	log.Panic("刪除日志文件异常")
+	//}
+	log.SetOutput(f)
 }
 
 // The tester generously allows solutions to complete elections in one second
@@ -941,7 +953,13 @@ func TestFigure8Unreliable2C(t *testing.T) {
 
 	cfg.begin("Test (2C): Figure 8 (unreliable)")
 
-	cfg.one(rand.Int()%10000, 1, true)
+	v := 1
+	if !TDebug {
+		cfg.one(rand.Int()%10000, 1, true)
+	} else {
+		cfg.one(v, 1, true)
+		v += 1
+	}
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
@@ -950,7 +968,13 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 		leader := -1
 		for i := 0; i < servers; i++ {
-			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
+			ok := false
+			if !TDebug {
+				_, _, ok = cfg.rafts[i].Start(rand.Int() % 10000)
+			} else {
+				_, _, ok = cfg.rafts[i].Start(v)
+				v += 1
+			}
 			if ok && cfg.connected[i] {
 				leader = i
 			}
