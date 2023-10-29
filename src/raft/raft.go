@@ -232,10 +232,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 	for i := 0; i < len(args.Entries); i++ {
 		if args.PrevLogIndex+i+1 < len(rf.Log) {
+			if rf.Log[args.PrevLogIndex+i+1].Term != args.Entries[i].Term {
+				rf.Log = rf.Log[:args.PrevLogIndex+i+1]
+				rf.Log = append(rf.Log, args.Entries[i:]...)
+				break
+			}
 			rf.Log[args.PrevLogIndex+i+1] = args.Entries[i]
 		} else {
 			// 4. Append any new entries not already in the log
-			rf.Log = append(rf.Log, args.Entries[i])
+			rf.Log = append(rf.Log, args.Entries[i:]...)
+			break
 		}
 	}
 
@@ -309,26 +315,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	ch := make(chan AppendEntriesEnum, len(rf.peers))
 	//  先收到过半回复才return，再commit
 	rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch)
-	return logLen - 1, term, isLeader
-	if !rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch) {
-		return logLen - 1, term, isLeader
-	}
-	go func() {
-		rf.mu.Lock()
-		defer func() {
-			rf.applyLog()
-			rf.mu.Unlock()
-		}()
-		if rf.LeaderID != rf.me {
-			return
-		}
-		if rf.Log[logLen-1].Term != rf.CurrentTerm {
-			return
-		}
-		if logLen > rf.CommitIndex {
-			rf.CommitIndex = logLen
-		}
-	}()
+	rf.checkCommitIndexAndUpdate(logLen)
 	return logLen - 1, term, isLeader
 }
 
@@ -341,17 +328,28 @@ func (rf *Raft) sendAppendEntriesToAllServer(logLen, currentTerm int, ch chan Ap
 			ch <- rf.syncToServer(server, logLen, currentTerm)
 		}(server)
 	}
+	done := time.Tick(time.Second)
+	ok := false
 	cnt := 0
-	for i := 1; i < len(rf.peers); i++ {
-		switch <-ch {
-		case AppendEntriesEnumDisconnect:
-		case AppendEntriesEnumBiggerTerm:
-			cnt = -1
-		case AppendEntriesEnumSuccess:
-			cnt += 1
-		}
-		if 2*(cnt+1) >= len(rf.peers) || cnt == -1 {
-			break
+	for !ok {
+		select {
+		case v := <-ch:
+			switch v {
+			case AppendEntriesEnumDisconnect:
+			case AppendEntriesEnumBiggerTerm:
+				cnt = -1
+			case AppendEntriesEnumSuccess:
+				cnt += 1
+			}
+			if 2*(cnt+1) >= len(rf.peers) || cnt == -1 {
+				break
+			}
+		case <-done:
+			ok = true
+		default:
+			if cnt == -1 || 2*(cnt+1) >= len(rf.peers) {
+				ok = true
+			}
 		}
 	}
 	if 2*(cnt+1) < len(rf.peers) {
@@ -406,6 +404,9 @@ func (rf *Raft) syncToServer(server, logLen, currentTerm int) AppendEntriesEnum 
 				rf.mu.Lock()
 				if rf.NextIndex[server] < logLen {
 					rf.NextIndex[server] = logLen
+				}
+				if rf.MatchIndex[server] < logLen {
+					rf.MatchIndex[server] = logLen
 				}
 				rf.mu.Unlock()
 				return AppendEntriesEnumSuccess
@@ -472,21 +473,26 @@ func (rf *Raft) heartBeat() {
 	if !rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch) {
 		return
 	}
-	rf.mu.Lock()
-	defer func() {
-		rf.applyLog()
-		rf.mu.Unlock()
-	}()
-	if rf.LeaderID != rf.me {
-		return
-	}
-	if rf.Log[logLen-1].Term != rf.CurrentTerm {
-		return
-	}
-	if logLen > rf.CommitIndex {
-		rf.CommitIndex = logLen
-	}
+	rf.checkCommitIndexAndUpdate(logLen)
+}
 
+func (rf *Raft) checkCommitIndexAndUpdate(logLen int) {
+	go func() {
+		rf.mu.Lock()
+		defer func() {
+			rf.applyLog()
+			rf.mu.Unlock()
+		}()
+		if rf.LeaderID != rf.me {
+			return
+		}
+		if rf.Log[logLen-1].Term != rf.CurrentTerm {
+			return
+		}
+		if logLen > rf.CommitIndex {
+			rf.CommitIndex = logLen
+		}
+	}()
 }
 
 func (rf *Raft) expired() bool {
@@ -541,27 +547,27 @@ func (rf *Raft) checkExpiredAndElection() ElectionResult {
 	rec := 0
 	grant := 0
 	done := time.Tick(time.Second)
-	for i := 1; i < len(rf.peers); i++ {
-		v := <-ch
-		switch v {
-		case RequestVoteEnumGrant:
-			grant += 1
-			rec += 1
-		case RequestVoteEnumLose:
-			rec += 1
-		case RequestVoteEnumDisConnect:
-
-		case RequestVoteEnumBiggerTerm:
-			grant = -1
-		}
+	ok := false
+	for !ok {
 		select {
-		case <-done:
-			grant = -1
-		default:
+		case v := <-ch:
+			switch v {
+			case RequestVoteEnumGrant:
+				grant += 1
+				rec += 1
+			case RequestVoteEnumLose:
+				rec += 1
+			case RequestVoteEnumDisConnect:
 
-		}
-		if grant == -1 || 2*(grant+1) >= len(rf.peers) {
-			break
+			case RequestVoteEnumBiggerTerm:
+				grant = -1
+			}
+		case <-done:
+			ok = true
+		default:
+			if grant == -1 || 2*(grant+1) >= len(rf.peers) {
+				ok = true
+			}
 		}
 	}
 	rf.mu.Lock()
@@ -583,8 +589,10 @@ func (rf *Raft) checkExpiredAndElection() ElectionResult {
 	DPrintf("[Election]aha~ id=%v\n", rf.me)
 	rf.LeaderID = rf.me
 	rf.NextIndex = make([]int, len(rf.peers))
+	rf.MatchIndex = make([]int, len(rf.peers))
 	for i := range rf.peers {
 		rf.NextIndex[i] = rf.CommitIndex
+		rf.MatchIndex[i] = 0
 	}
 	return Success
 }

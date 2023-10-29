@@ -44,11 +44,11 @@ type Raft struct {
 	LeaderID      int
 	ElectionTimer time.Time
 
-	Log         []Entry  // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
-	CommitIndex int      // index of highest log entry known to be committed (initialized to 0, increases monotonically)
-	LastApplied int      // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
-	NextIndex   []int    // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-	MatchIndex  []string // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+	Log         []Entry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
+	CommitIndex int     // index of highest log entry known to be committed (initialized to 0, increases monotonically)
+	LastApplied int     // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+	NextIndex   []int   // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+	MatchIndex  []int   // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 	ApplyCh     chan ApplyMsg
 }
 
