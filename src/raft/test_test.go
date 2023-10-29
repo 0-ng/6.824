@@ -18,8 +18,9 @@ import (
 	"time"
 )
 
-//const TDebug = true
-const TDebug = false
+const TDebug = true
+
+//const TDebug = false
 
 func TDPrintf(format string, a ...interface{}) (n int, err error) {
 	if TDebug {
