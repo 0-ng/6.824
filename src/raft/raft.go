@@ -80,6 +80,7 @@ func (rf *Raft) persist() {
 	}
 	e.Encode(rf.Log)
 	raftstate := w.Bytes()
+	// TODO
 	rf.persister.Save(raftstate, nil)
 }
 
@@ -117,6 +118,20 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
+	// TODO
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if index < (rf.LastIncludedIndex + 1) {
+		return
+	}
+	lastLog := rf.Log[index-(rf.LastIncludedIndex+1)]
+	DPrintf("[Snapshot]%v pre log %v\n", rf.me, rf.Log)
+	rf.Log = rf.Log[index+1-(rf.LastIncludedIndex+1):]
+	DPrintf("[Snapshot]%v after log %v\n", rf.me, rf.Log)
+	rf.LastIncludedIndex = index
+	rf.LastIncludedTerm = lastLog.Term
+	rf.SnapshotList = append(rf.SnapshotList, snapshot)
+	DPrintf("[Snapshot]%v save snapshot to index %v\n", rf.me, index)
 
 }
 
@@ -148,11 +163,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
-	if args.LastLogTerm < rf.Log[len(rf.Log)-1].Term {
+	myTerm := rf.LastIncludedTerm
+	if len(rf.Log) > 0 {
+		myTerm = rf.Log[len(rf.Log)-1].Term
+	}
+	if args.LastLogTerm < myTerm {
 		reply.VoteGranted = false
 		return
 	}
-	if args.LastLogTerm == rf.Log[len(rf.Log)-1].Term && args.LastLogIndex+1 < len(rf.Log) {
+	if args.LastLogTerm == myTerm && args.LastLogIndex+1 < len(rf.Log)+rf.LastIncludedIndex+1 {
 		reply.VoteGranted = false
 		return
 	}
@@ -218,26 +237,39 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	}
+	if args.PrevLogIndex < rf.LastIncludedIndex {
+		reply.Success = false
+		return
+	}
+	if args.PrevLogIndex == rf.LastIncludedIndex {
+		if args.PrevLogTerm != rf.LastIncludedTerm {
+			reply.Success = false
+			return
+		}
+	}
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
-	if len(rf.Log) <= args.PrevLogIndex || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if rf.LastIncludedIndex+1+len(rf.Log) <= args.PrevLogIndex {
 		reply.Success = false
 		rf.ElectionTimer = time.Now()
-		if len(rf.Log) <= args.PrevLogIndex {
-			DPrintf("%v AppendEntries fail, len(rf.Log) <= args.PrevLogIndex, %v, %v\n", rf.me, len(rf.Log), args.PrevLogIndex)
-		} else {
-			DPrintf("%v AppendEntries fail, rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm, %v, %v\n", rf.me, rf.Log[args.PrevLogIndex].Term, args.PrevLogTerm)
-		}
+		DPrintf("%v AppendEntries fail, len(rf.Log) <= args.PrevLogIndex, %v, %v\n", rf.me, rf.LastIncludedIndex+1+len(rf.Log), args.PrevLogIndex)
 		return
+	}
+	if args.PrevLogIndex-(rf.LastIncludedIndex+1) >= 0 && rf.Log[args.PrevLogIndex-(rf.LastIncludedIndex+1)].Term != args.PrevLogTerm {
+		reply.Success = false
+		rf.ElectionTimer = time.Now()
+		DPrintf("%v AppendEntries fail, rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm, %v, %v\n", rf.me, rf.Log[args.PrevLogIndex-(rf.LastIncludedIndex+1)].Term, args.PrevLogTerm)
+		return
+
 	}
 	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 	for i := 0; i < len(args.Entries); i++ {
-		if args.PrevLogIndex+i+1 < len(rf.Log) {
-			if rf.Log[args.PrevLogIndex+i+1].Term != args.Entries[i].Term {
-				rf.Log = rf.Log[:args.PrevLogIndex+i+1]
+		if args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1) < len(rf.Log) {
+			if rf.Log[args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1)].Term != args.Entries[i].Term {
+				rf.Log = rf.Log[:args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1)]
 				rf.Log = append(rf.Log, args.Entries[i:]...)
 				break
 			}
-			rf.Log[args.PrevLogIndex+i+1] = args.Entries[i]
+			rf.Log[args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1)] = args.Entries[i]
 		} else {
 			// 4. Append any new entries not already in the log
 			rf.Log = append(rf.Log, args.Entries[i:]...)
@@ -257,10 +289,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.LastApplied += 1
 		rf.ApplyCh <- ApplyMsg{
 			CommandValid: true,
-			Command:      rf.Log[rf.LastApplied].Entry,
+			Command:      rf.Log[rf.LastApplied-(rf.LastIncludedIndex+1)].Entry,
 			CommandIndex: rf.LastApplied,
 		}
-		DPrintf("[AppendEntries]%v apply [%v:%v] from %v, commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied].Entry, args.LeaderID, rf.CommitIndex)
+		DPrintf("[AppendEntries]%v apply [%v:%v] from %v, commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-(rf.LastIncludedIndex+1)].Entry, args.LeaderID, rf.CommitIndex)
 	}
 	rf.ElectionTimer = time.Now()
 	rf.VotedFor = nil
@@ -309,23 +341,25 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	rf.Log = append(rf.Log, Entry{Entry: command, Term: term})
 	currentTerm := rf.CurrentTerm
-	logLen := len(rf.Log)
+	logIdx := len(rf.Log) + rf.LastIncludedIndex + 1
 	rf.persist()
 	rf.mu.Unlock()
 	ch := make(chan AppendEntriesEnum, len(rf.peers))
 	//  先收到过半回复才return，再commit
-	rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch)
-	rf.checkCommitIndexAndUpdate(logLen)
-	return logLen - 1, term, isLeader
+	if !rf.sendAppendEntriesToAllServer(logIdx, currentTerm, ch) {
+		return logIdx - 1, term, isLeader
+	}
+	rf.checkCommitIndexAndUpdate(logIdx)
+	return logIdx - 1, term, isLeader
 }
 
-func (rf *Raft) sendAppendEntriesToAllServer(logLen, currentTerm int, ch chan AppendEntriesEnum) bool {
+func (rf *Raft) sendAppendEntriesToAllServer(logIdx, currentTerm int, ch chan AppendEntriesEnum) bool {
 	for server := range rf.peers {
 		if server == rf.me {
 			continue
 		}
 		go func(server int) {
-			ch <- rf.syncToServer(server, logLen, currentTerm)
+			ch <- rf.syncToServer(server, logIdx, currentTerm)
 		}(server)
 	}
 	done := time.Tick(time.Second)
@@ -362,7 +396,7 @@ func (rf *Raft) sendAppendEntriesToAllServer(logLen, currentTerm int, ch chan Ap
 	return true
 }
 
-func (rf *Raft) syncToServer(server, logLen, currentTerm int) AppendEntriesEnum {
+func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum {
 	start := time.Now()
 	for time.Since(start).Seconds() < 0.5 {
 		rf.mu.Lock()
@@ -371,18 +405,34 @@ func (rf *Raft) syncToServer(server, logLen, currentTerm int) AppendEntriesEnum 
 			return AppendEntriesEnumBiggerTerm
 		}
 		id := rf.NextIndex[server]
-		if id > logLen {
+		if id > logIdx {
 			rf.mu.Unlock()
 			return AppendEntriesEnumSuccess
-			//id = logLen
+		}
+		if id <= rf.LastIncludedIndex {
+			rf.mu.Unlock()
+			// TODO 同步
+			//DPrintf("[syncToServer]id <= rf.LastIncludedIndex\n")
+			return AppendEntriesEnumSuccess
+		}
+		if logIdx <= rf.LastIncludedIndex {
+			rf.mu.Unlock()
+			// TODO 同步
+			return AppendEntriesEnumSuccess
+		}
+
+		prevLogIndex := id - 1
+		prevLogTerm := rf.LastIncludedTerm
+		if prevLogIndex > rf.LastIncludedIndex {
+			prevLogTerm = rf.Log[prevLogIndex-(rf.LastIncludedIndex+1)].Term
 		}
 		args := &AppendEntriesArgs{
 			Term:     rf.CurrentTerm,
 			LeaderID: rf.LeaderID,
 
-			PrevLogIndex: id - 1,
-			PrevLogTerm:  rf.Log[id-1].Term,
-			Entries:      rf.Log[id:logLen],
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			Entries:      rf.Log[id-(rf.LastIncludedIndex+1) : logIdx-(rf.LastIncludedIndex+1)], // TODO lock前压缩了怎么办
 			LeaderCommit: rf.CommitIndex,
 		}
 		rf.mu.Unlock()
@@ -402,11 +452,11 @@ func (rf *Raft) syncToServer(server, logLen, currentTerm int) AppendEntriesEnum 
 				return AppendEntriesEnumBiggerTerm
 			} else if reply.Success {
 				rf.mu.Lock()
-				if rf.NextIndex[server] < logLen {
-					rf.NextIndex[server] = logLen
+				if rf.NextIndex[server] < logIdx {
+					rf.NextIndex[server] = logIdx
 				}
-				if rf.MatchIndex[server] < logLen {
-					rf.MatchIndex[server] = logLen
+				if rf.MatchIndex[server] < logIdx {
+					rf.MatchIndex[server] = logIdx
 				}
 				rf.mu.Unlock()
 				return AppendEntriesEnumSuccess
@@ -422,8 +472,8 @@ func (rf *Raft) syncToServer(server, logLen, currentTerm int) AppendEntriesEnum 
 			return AppendEntriesEnumDisconnect
 		}
 		// TODO
-		rf.NextIndex[server] -= 1
-		//rf.NextIndex[server] = 1
+		//rf.NextIndex[server] -= 1
+		rf.NextIndex[server] = 1
 		rf.mu.Unlock()
 	}
 	return AppendEntriesEnumDisconnect
@@ -466,8 +516,9 @@ func (rf *Raft) ticker() {
 
 func (rf *Raft) heartBeat() {
 	ch := make(chan AppendEntriesEnum, len(rf.peers))
+	DPrintf("[heartBeat]%v begin to acquire lock for heartbeat\n", rf.me)
 	rf.mu.Lock()
-	logLen := len(rf.Log)
+	logLen := len(rf.Log) + rf.LastIncludedIndex + 1
 	currentTerm := rf.CurrentTerm
 	rf.mu.Unlock()
 	if !rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch) {
@@ -476,21 +527,25 @@ func (rf *Raft) heartBeat() {
 	rf.checkCommitIndexAndUpdate(logLen)
 }
 
-func (rf *Raft) checkCommitIndexAndUpdate(logLen int) {
+func (rf *Raft) checkCommitIndexAndUpdate(logIdx int) {
 	go func() {
 		rf.mu.Lock()
 		defer func() {
 			rf.applyLog()
+			rf.composeLog()
 			rf.mu.Unlock()
 		}()
+		if logIdx-1 <= rf.LastIncludedIndex {
+			return
+		}
 		if rf.LeaderID != rf.me {
 			return
 		}
-		if rf.Log[logLen-1].Term != rf.CurrentTerm {
+		if rf.Log[logIdx-1-rf.LastIncludedIndex-1].Term != rf.CurrentTerm {
 			return
 		}
-		if logLen > rf.CommitIndex {
-			rf.CommitIndex = logLen
+		if logIdx > rf.CommitIndex {
+			rf.CommitIndex = logIdx
 		}
 	}()
 }
@@ -510,11 +565,17 @@ func (rf *Raft) checkExpiredAndElection() ElectionResult {
 	ct := rf.CurrentTerm
 	rf.VotedFor = &rf.me
 	rf.ElectionTimer = time.Now()
+	LastLogIndex := rf.LastIncludedIndex
+	LastLogTerm := rf.LastIncludedTerm
+	if len(rf.Log) > 0 {
+		LastLogIndex += len(rf.Log)
+		LastLogTerm = rf.Log[len(rf.Log)-1].Term
+	}
 	args := &RequestVoteArgs{
 		Term:         ct,
 		CandidateID:  rf.me,
-		LastLogIndex: len(rf.Log) - 1,
-		LastLogTerm:  rf.Log[len(rf.Log)-1].Term,
+		LastLogIndex: LastLogIndex,
+		LastLogTerm:  LastLogTerm,
 	}
 	rf.mu.Unlock()
 	DPrintf("[Election]id=%v start an election\n", rf.me)
@@ -609,11 +670,16 @@ func (rf *Raft) applyLog() {
 		rf.LastApplied += 1
 		rf.ApplyCh <- ApplyMsg{
 			CommandValid: true,
-			Command:      rf.Log[rf.LastApplied].Entry,
+			Command:      rf.Log[rf.LastApplied-(rf.LastIncludedIndex+1)].Entry,
 			CommandIndex: rf.LastApplied,
 		}
-		DPrintf("[applyLog]%v apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied].Entry, rf.CommitIndex)
+		DPrintf("[applyLog]%v apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-(rf.LastIncludedIndex+1)].Entry, rf.CommitIndex)
 	}
+}
+
+// with lock previous
+func (rf *Raft) composeLog() {
+
 }
 
 // Make the service or tester wants to create a Raft server. the ports
@@ -638,6 +704,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.CommitIndex = len(rf.Log)
 	rf.LastApplied = 0
 	rf.ApplyCh = applyCh
+	rf.LastIncludedIndex = -1
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 

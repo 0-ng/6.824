@@ -9,6 +9,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -1176,11 +1177,17 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	defer cfg.cleanup()
 
 	cfg.begin(name)
-
-	cfg.one(rand.Int(), servers, true)
+	v := 0
+	if TDebug {
+		v += 1
+	} else {
+		v = rand.Int()
+	}
+	cfg.one(v, servers, true)
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
+		fmt.Println(i)
 		victim := (leader1 + 1) % servers
 		sender := leader1
 		if i%3 == 1 {
@@ -1190,17 +1197,32 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 
 		if disconnect {
 			cfg.disconnect(victim)
-			cfg.one(rand.Int(), servers-1, true)
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.one(v, servers-1, true)
 		}
 		if crash {
 			cfg.crash1(victim)
-			cfg.one(rand.Int(), servers-1, true)
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.one(v, servers-1, true)
 		}
 
 		// perhaps send enough to get a snapshot
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
 		for i := 0; i < nn; i++ {
-			cfg.rafts[sender].Start(rand.Int())
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.rafts[sender].Start(v)
 		}
 
 		// let applier threads catch up with the Start()'s
@@ -1208,9 +1230,19 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 			// make sure all followers have caught up, so that
 			// an InstallSnapshot RPC isn't required for
 			// TestSnapshotBasic2D().
-			cfg.one(rand.Int(), servers, true)
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.one(v, servers, true)
 		} else {
-			cfg.one(rand.Int(), servers-1, true)
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.one(v, servers-1, true)
 		}
 
 		if cfg.LogSize() >= MAXLOGSIZE {
@@ -1220,13 +1252,23 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 			// reconnect a follower, who maybe behind and
 			// needs to rceive a snapshot to catch up.
 			cfg.connect(victim)
-			cfg.one(rand.Int(), servers, true)
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.one(v, servers, true)
 			leader1 = cfg.checkOneLeader()
 		}
 		if crash {
 			cfg.start1(victim, cfg.applierSnap)
 			cfg.connect(victim)
-			cfg.one(rand.Int(), servers, true)
+			if TDebug {
+				v += 1
+			} else {
+				v = rand.Int()
+			}
+			cfg.one(v, servers, true)
 			leader1 = cfg.checkOneLeader()
 		}
 	}

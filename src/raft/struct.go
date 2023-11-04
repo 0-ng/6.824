@@ -50,6 +50,10 @@ type Raft struct {
 	NextIndex   []int   // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	MatchIndex  []int   // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 	ApplyCh     chan ApplyMsg
+
+	LastIncludedIndex int // the snapshot replaces all entries up through and including this index
+	LastIncludedTerm  int // term of lastIncludedIndex
+	SnapshotList      [][]byte
 }
 
 // RequestVoteArgs example RequestVote RPC arguments structure.
