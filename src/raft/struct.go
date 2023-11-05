@@ -29,8 +29,7 @@ type ApplyMsg struct {
 
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex // Lock to protect shared access to this peer's state
-	applyMu   sync.Mutex
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -51,6 +50,10 @@ type Raft struct {
 	NextIndex   []int   // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	MatchIndex  []int   // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 	ApplyCh     chan ApplyMsg
+	ApplyCh2    chan ApplyMsg
+	//ApplyLock   sync.Mutex
+	//ApplyCond   *sync.Cond
+	//ApplyQueue  []ApplyMsg
 
 	LastIncludedIndex int // the snapshot replaces all entries up through and including this index
 	LastIncludedTerm  int // term of lastIncludedIndex

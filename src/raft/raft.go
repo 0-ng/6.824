@@ -44,14 +44,6 @@ func (rf *Raft) test1(skip int, tp string) {
 	}
 }
 
-func (rf *Raft) ApplyLock() bool {
-	return rf.applyMu.TryLock()
-}
-
-func (rf *Raft) ApplyUnlock() {
-	rf.applyMu.Unlock()
-}
-
 func (rf *Raft) Lock() {
 	rf.mu.Lock()
 }
@@ -163,18 +155,25 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	// TODO
 	rf.Lock()
-	defer rf.Unlock()
-	if index < (rf.LastIncludedIndex + 1) {
+	defer func() {
+		rf.persist()
+		rf.Unlock()
+	}()
+	if index < rf.LastIncludedIndex {
 		return
 	}
-	lastLog := rf.Log[index-(rf.LastIncludedIndex+1)]
+	//0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+	//0 10 11 12 13 14 15 16 17 18 19 20
+	//0 20
+	//9 19
+	//19 -9 10
+	lastLog := rf.Log[index-rf.LastIncludedIndex]
 	DPrintf("[Snapshot]%v pre log %v\n", rf.me, rf.Log)
-	rf.Log = rf.Log[index+1-(rf.LastIncludedIndex+1):]
+	rf.Log = append(rf.Log[:1], rf.Log[index+1-rf.LastIncludedIndex:]...)
 	DPrintf("[Snapshot]%v after log %v\n", rf.me, rf.Log)
 	rf.LastIncludedIndex = index
 	rf.LastIncludedTerm = lastLog.Term
 	rf.SnapshotList = snapshot
-	rf.persist()
 	DPrintf("[Snapshot]%v save snapshot to index %v\n", rf.me, index)
 
 }
@@ -187,6 +186,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 			rf.LeaderID = args.LeaderID
 		}
 		reply.Term = rf.CurrentTerm
+		rf.persist()
 		rf.Unlock()
 	}()
 	// 1. Reply immediately if term < currentTerm
@@ -203,19 +203,19 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	}
 
 	// 5. Save snapshot file, discard any existing or partial snapshot with a smaller index
-	if args.LastIncludedIndex < rf.LastIncludedIndex {
+	if args.LastIncludedIndex <= rf.LastIncludedIndex {
 		return
 	}
 
 	// 6. If existing log entry has same index and term as snapshot’s last included entry, retain log entries following it and reply
-	if args.LastIncludedIndex-(rf.LastIncludedIndex+1) < len(rf.Log) {
+	if args.LastIncludedIndex-rf.LastIncludedIndex < len(rf.Log) {
 		return
 	}
 	// 7. Discard the entire log
 	rf.SnapshotList = args.Data
 	rf.LastIncludedIndex = args.LastIncludedIndex
 	rf.LastIncludedTerm = args.LastIncludedTerm
-	rf.Log = []Entry{}
+	rf.Log = rf.Log[:1]
 
 	// 8. Reset state machine using snapshot contents (and load snapshot’s cluster configuration)
 	msg := ApplyMsg{
@@ -271,14 +271,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	myTerm := rf.LastIncludedTerm
-	if len(rf.Log) > 0 {
+	if len(rf.Log) > 1 {
 		myTerm = rf.Log[len(rf.Log)-1].Term
 	}
 	if args.LastLogTerm < myTerm {
 		reply.VoteGranted = false
 		return
 	}
-	if args.LastLogTerm == myTerm && args.LastLogIndex+1 < len(rf.Log)+rf.LastIncludedIndex+1 {
+	if args.LastLogTerm == myTerm && args.LastLogIndex < len(rf.Log)-1+rf.LastIncludedIndex {
 		reply.VoteGranted = false
 		return
 	}
@@ -337,8 +337,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		reply.Term = rf.CurrentTerm
 		rf.persist()
-		rf.Unlock()
 		rf.applyLog()
+		rf.Unlock()
 	}()
 	// 1. Reply false if term < currentTerm (§5.1)
 	if rf.CurrentTerm > args.Term {
@@ -346,7 +346,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	if args.PrevLogIndex < rf.LastIncludedIndex {
-		reply.Success = false
+		reply.Success = true
 		return
 	}
 	if args.PrevLogIndex == rf.LastIncludedIndex {
@@ -356,28 +356,28 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}
 	// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
-	if rf.LastIncludedIndex+1+len(rf.Log) <= args.PrevLogIndex {
+	if rf.LastIncludedIndex+len(rf.Log) <= args.PrevLogIndex {
 		reply.Success = false
 		rf.ElectionTimer = time.Now()
-		DPrintf("%v AppendEntries fail, len(rf.Log) <= args.PrevLogIndex, %v, %v\n", rf.me, rf.LastIncludedIndex+1+len(rf.Log), args.PrevLogIndex)
+		DPrintf("%v AppendEntries fail, len(rf.Log) <= args.PrevLogIndex, %v, %v\n", rf.me, rf.LastIncludedIndex+len(rf.Log), args.PrevLogIndex)
 		return
 	}
-	if args.PrevLogIndex-(rf.LastIncludedIndex+1) >= 0 && rf.Log[args.PrevLogIndex-(rf.LastIncludedIndex+1)].Term != args.PrevLogTerm {
+	if args.PrevLogIndex-rf.LastIncludedIndex > 0 && rf.Log[args.PrevLogIndex-rf.LastIncludedIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		rf.ElectionTimer = time.Now()
-		DPrintf("%v AppendEntries fail, rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm, %v, %v\n", rf.me, rf.Log[args.PrevLogIndex-(rf.LastIncludedIndex+1)].Term, args.PrevLogTerm)
+		DPrintf("%v AppendEntries fail, rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm, %v, %v\n", rf.me, rf.Log[args.PrevLogIndex-rf.LastIncludedIndex].Term, args.PrevLogTerm)
 		return
 
 	}
 	// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 	for i := 0; i < len(args.Entries); i++ {
-		if args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1) < len(rf.Log) {
-			if rf.Log[args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1)].Term != args.Entries[i].Term {
-				rf.Log = rf.Log[:args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1)]
+		if args.PrevLogIndex+i+1-rf.LastIncludedIndex < len(rf.Log) {
+			if rf.Log[args.PrevLogIndex+i+1-rf.LastIncludedIndex].Term != args.Entries[i].Term {
+				rf.Log = rf.Log[:args.PrevLogIndex+i+1-rf.LastIncludedIndex]
 				rf.Log = append(rf.Log, args.Entries[i:]...)
 				break
 			}
-			rf.Log[args.PrevLogIndex+i+1-(rf.LastIncludedIndex+1)] = args.Entries[i]
+			rf.Log[args.PrevLogIndex+i+1-rf.LastIncludedIndex] = args.Entries[i]
 		} else {
 			// 4. Append any new entries not already in the log
 			rf.Log = append(rf.Log, args.Entries[i:]...)
@@ -440,7 +440,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.Lock()
 	rf.Log = append(rf.Log, Entry{Entry: command, Term: term})
 	currentTerm := rf.CurrentTerm
-	logIdx := len(rf.Log) + rf.LastIncludedIndex + 1
+	logIdx := len(rf.Log) + rf.LastIncludedIndex
 	rf.persist()
 	rf.Unlock()
 	ch := make(chan AppendEntriesEnum, len(rf.peers))
@@ -552,7 +552,7 @@ func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum 
 		prevLogIndex := id - 1
 		prevLogTerm := rf.LastIncludedTerm
 		if prevLogIndex > rf.LastIncludedIndex {
-			prevLogTerm = rf.Log[prevLogIndex-(rf.LastIncludedIndex+1)].Term
+			prevLogTerm = rf.Log[prevLogIndex-rf.LastIncludedIndex].Term
 		}
 		args := &AppendEntriesArgs{
 			Term:     rf.CurrentTerm,
@@ -560,7 +560,7 @@ func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum 
 
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
-			Entries:      rf.Log[id-(rf.LastIncludedIndex+1) : logIdx-(rf.LastIncludedIndex+1)], // TODO lock前压缩了怎么办
+			Entries:      rf.Log[id-rf.LastIncludedIndex : logIdx-rf.LastIncludedIndex], // TODO lock前压缩了怎么办
 			LeaderCommit: rf.CommitIndex,
 		}
 		rf.Unlock()
@@ -599,8 +599,8 @@ func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum 
 			return AppendEntriesEnumDisconnect
 		}
 		// TODO
-		//rf.NextIndex[server] -= 1
-		rf.NextIndex[server] = 1
+		rf.NextIndex[server] -= 1
+		//rf.NextIndex[server] = 1
 		rf.Unlock()
 	}
 	return AppendEntriesEnumDisconnect
@@ -645,7 +645,7 @@ func (rf *Raft) heartBeat() {
 	ch := make(chan AppendEntriesEnum, len(rf.peers))
 	DPrintf("[heartBeat]%v begin to acquire lock for heartbeat\n", rf.me)
 	rf.Lock()
-	logLen := len(rf.Log) + rf.LastIncludedIndex + 1
+	logLen := len(rf.Log) + rf.LastIncludedIndex
 	currentTerm := rf.CurrentTerm
 	rf.Unlock()
 	if !rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch) {
@@ -658,8 +658,9 @@ func (rf *Raft) checkCommitIndexAndUpdate(logIdx int) {
 	go func() {
 		rf.Lock()
 		defer func() {
-			rf.Unlock()
+			rf.persist()
 			rf.applyLog()
+			rf.Unlock()
 		}()
 		if logIdx-1 <= rf.LastIncludedIndex {
 			return
@@ -667,7 +668,7 @@ func (rf *Raft) checkCommitIndexAndUpdate(logIdx int) {
 		if rf.LeaderID != rf.me {
 			return
 		}
-		if rf.Log[logIdx-1-rf.LastIncludedIndex-1].Term != rf.CurrentTerm {
+		if rf.Log[logIdx-1-rf.LastIncludedIndex].Term != rf.CurrentTerm {
 			return
 		}
 		if logIdx > rf.CommitIndex {
@@ -693,8 +694,8 @@ func (rf *Raft) checkExpiredAndElection() ElectionResult {
 	rf.ElectionTimer = time.Now()
 	LastLogIndex := rf.LastIncludedIndex
 	LastLogTerm := rf.LastIncludedTerm
-	if len(rf.Log) > 0 {
-		LastLogIndex += len(rf.Log)
+	if len(rf.Log) > 1 {
+		LastLogIndex += len(rf.Log) - 1
 		LastLogTerm = rf.Log[len(rf.Log)-1].Term
 	}
 	args := &RequestVoteArgs{
@@ -790,23 +791,26 @@ func (rf *Raft) receiveBiggerTerm(term int) {
 	rf.LeaderID = -1
 }
 
+func (rf *Raft) applyLogRoutine() {
+	for {
+		v := <-rf.ApplyCh2
+		rf.ApplyCh <- v
+	}
+}
+
 // with lock previous
 func (rf *Raft) applyLog() {
-	rf.Lock()
 	for rf.LastApplied+1 < rf.CommitIndex {
 		rf.LastApplied += 1
-		DPrintf("[applyLog]%v begin to apply %v, loglen=%v, a-b=%v, commitIndex %v\n", rf.me, rf.LastApplied, len(rf.Log), rf.LastApplied-(rf.LastIncludedIndex+1), rf.CommitIndex)
-		DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-(rf.LastIncludedIndex+1)].Entry, rf.CommitIndex)
-		msg := ApplyMsg{
+		DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
+		//msg :=
+		rf.ApplyCh2 <- ApplyMsg{
 			CommandValid: true,
-			Command:      rf.Log[rf.LastApplied-(rf.LastIncludedIndex+1)].Entry,
+			Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,
 			CommandIndex: rf.LastApplied,
 		}
-		rf.Unlock()
-		rf.ApplyCh <- msg
-		rf.Lock()
+		//rf.ApplyQueue = append(rf.ApplyQueue, msg)
 	}
-	rf.Unlock()
 }
 
 // Make the service or tester wants to create a Raft server. the ports
@@ -831,12 +835,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.CommitIndex = len(rf.Log)
 	rf.LastApplied = 0
 	rf.ApplyCh = applyCh
-	rf.LastIncludedIndex = -1
+	rf.LastIncludedIndex = 0
+	rf.ApplyCh2 = make(chan ApplyMsg, 10086)
+	//rf.ApplyCond = sync.NewCond(&rf.ApplyLock)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.SnapshotList = persister.ReadSnapshot()
 	DPrintf("[Make]%v restore from persist %+v\n", rf.me, rf)
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.applyLogRoutine()
 	return rf
 }

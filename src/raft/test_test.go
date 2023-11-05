@@ -947,6 +947,7 @@ func TestUnreliableAgree2C(t *testing.T) {
 	cfg.end()
 }
 
+// TODO
 func TestFigure8Unreliable2C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true, false)
@@ -1195,6 +1196,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		}
 
 		if disconnect {
+			TDPrintf("disconnect %v\n", victim)
 			cfg.disconnect(victim)
 			if TDebug {
 				v += 1
@@ -1204,6 +1206,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 			cfg.one(v, servers-1, true)
 		}
 		if crash {
+			TDPrintf("crash %v\n", victim)
 			cfg.crash1(victim)
 			if TDebug {
 				v += 1
@@ -1250,6 +1253,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		if disconnect {
 			// reconnect a follower, who maybe behind and
 			// needs to rceive a snapshot to catch up.
+			TDPrintf("connect %v\n", victim)
 			cfg.connect(victim)
 			if TDebug {
 				v += 1
@@ -1260,6 +1264,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 			leader1 = cfg.checkOneLeader()
 		}
 		if crash {
+			TDPrintf("start %v\n", victim)
 			cfg.start1(victim, cfg.applierSnap)
 			cfg.connect(victim)
 			if TDebug {
@@ -1278,6 +1283,7 @@ func TestSnapshotBasic2D(t *testing.T) {
 	snapcommon(t, "Test (2D): snapshots basic", false, true, false)
 }
 
+// TODO
 func TestSnapshotInstall2D(t *testing.T) {
 	snapcommon(t, "Test (2D): install snapshots (disconnect)", true, true, false)
 }
@@ -1287,10 +1293,12 @@ func TestSnapshotInstallUnreliable2D(t *testing.T) {
 		true, false, false)
 }
 
+// TODO
 func TestSnapshotInstallCrash2D(t *testing.T) {
 	snapcommon(t, "Test (2D): install snapshots (crash)", false, true, true)
 }
 
+// TODO
 func TestSnapshotInstallUnCrash2D(t *testing.T) {
 	snapcommon(t, "Test (2D): install snapshots (unreliable+crash)", false, false, true)
 }
@@ -1298,6 +1306,7 @@ func TestSnapshotInstallUnCrash2D(t *testing.T) {
 // do the servers persist the snapshots, and
 // restart using snapshot along with the
 // tail of the log?
+// TODO
 func TestSnapshotAllCrash2D(t *testing.T) {
 	servers := 3
 	iters := 5
