@@ -9,7 +9,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -1187,7 +1186,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	leader1 := cfg.checkOneLeader()
 
 	for i := 0; i < iters; i++ {
-		fmt.Println(i)
+		//fmt.Println(i)
 		victim := (leader1 + 1) % servers
 		sender := leader1
 		if i%3 == 1 {
@@ -1320,11 +1319,13 @@ func TestSnapshotAllCrash2D(t *testing.T) {
 
 		// crash all
 		for i := 0; i < servers; i++ {
+			TDPrintf("crash %v\n", i)
 			cfg.crash1(i)
 		}
 
 		// revive all
 		for i := 0; i < servers; i++ {
+			TDPrintf("start %v\n", i)
 			cfg.start1(i, cfg.applierSnap)
 			cfg.connect(i)
 		}

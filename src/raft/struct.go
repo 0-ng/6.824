@@ -29,7 +29,8 @@ type ApplyMsg struct {
 
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.Mutex // Lock to protect shared access to this peer's state
+	applyMu   sync.Mutex
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -53,7 +54,21 @@ type Raft struct {
 
 	LastIncludedIndex int // the snapshot replaces all entries up through and including this index
 	LastIncludedTerm  int // term of lastIncludedIndex
-	SnapshotList      [][]byte
+	SnapshotList      []byte
+}
+
+type InstallSnapshotArgs struct {
+	Term              int    `json:"term,omitempty"`                // leader’s term
+	LeaderID          int    `json:"leader_id,omitempty"`           // so follower can redirect clients
+	LastIncludedIndex int    `json:"last_included_index,omitempty"` // the snapshot replaces all entries up through and including this index
+	LastIncludedTerm  int    `json:"last_included_term,omitempty"`  // term of lastIncludedIndex
+	Offset            int    `json:"offset,omitempty"`              // byte offset where chunk is positioned in the snapshot file
+	Data              []byte `json:"data,omitempty"`                // raw bytes of the snapshot chunk, starting at offset
+	Done              bool   `json:"done,omitempty"`                // true if this is the last chunk
+}
+
+type InstallSnapshotReply struct {
+	Term int `json:"term,omitempty"` // currentTerm, for leader to update itself
 }
 
 // RequestVoteArgs example RequestVote RPC arguments structure.
