@@ -6,6 +6,7 @@ const (
 	AppendEntriesEnumDisconnect AppendEntriesEnum = 1
 	AppendEntriesEnumBiggerTerm AppendEntriesEnum = 2
 	AppendEntriesEnumSuccess    AppendEntriesEnum = 3
+	AppendEntriesEnumFail       AppendEntriesEnum = 4
 )
 
 type ElectionResult int64

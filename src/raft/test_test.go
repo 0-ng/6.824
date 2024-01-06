@@ -9,36 +9,12 @@ package raft
 //
 
 import (
-	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-const TDebug = true
-
-//const TDebug = false
-
-func TDPrintf(format string, a ...interface{}) (n int, err error) {
-	if TDebug {
-		log.Printf(format, a...)
-	}
-	return
-}
-
-func init() {
-	f, err := os.OpenFile("a.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND|os.O_TRUNC, 0644)
-	if err != nil {
-		log.Panic("打开日志文件异常")
-	}
-	//if f.Truncate(0) != nil {
-	//	log.Panic("刪除日志文件异常")
-	//}
-	log.SetOutput(f)
-}
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -313,6 +289,8 @@ func TestFailAgree2B(t *testing.T) {
 
 	// disconnect one follower from the network.
 	leader := cfg.checkOneLeader()
+	TDPrintf("[TestFailAgree2B]disconnect %v", (leader+1)%servers)
+
 	cfg.disconnect((leader + 1) % servers)
 
 	// the leader and remaining follower should be
@@ -552,6 +530,7 @@ func TestBackup2B(t *testing.T) {
 		//cfg.rafts[leader1].Start(rand.Int())
 		cfg.rafts[leader1].Start(v)
 		v += 1
+		TDPrintf("[TEST]start %v", v)
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -868,15 +847,26 @@ func TestFigure82C(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2C): Figure 8")
-
-	cfg.one(rand.Int(), 1, true)
+	v := 1
+	if TDebug {
+		cfg.one(v, 1, true)
+		v += 1
+	} else {
+		cfg.one(rand.Int(), 1, true)
+	}
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {
-				_, _, ok := cfg.rafts[i].Start(rand.Int())
+				var ok bool
+				if TDebug {
+					_, _, ok = cfg.rafts[i].Start(v)
+					v += 1
+				} else {
+					_, _, ok = cfg.rafts[i].Start(rand.Int())
+				}
 				if ok {
 					leader = i
 				}
@@ -913,7 +903,12 @@ func TestFigure82C(t *testing.T) {
 		}
 	}
 
-	cfg.one(rand.Int(), servers, true)
+	if TDebug {
+		cfg.one(v, servers, true)
+		v += 1
+	} else {
+		cfg.one(rand.Int(), servers, true)
+	}
 
 	cfg.end()
 }

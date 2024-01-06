@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"math/rand"
 	"runtime"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -218,18 +219,15 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.Log = rf.Log[:1]
 
 	// 8. Reset state machine using snapshot contents (and load snapshot’s cluster configuration)
-	msg := ApplyMsg{
+	rf.CommitIndex = rf.LastIncludedIndex + 1
+	rf.LastApplied = rf.LastIncludedIndex
+	DPrintf("[InstallSnapshot]%v set LastApplied=%v, CommitIndex=%v\n", rf.me, rf.LastApplied, rf.CommitIndex)
+	rf.ApplyCh2 <- ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      rf.SnapshotList,
 		SnapshotTerm:  rf.LastIncludedTerm,
 		SnapshotIndex: rf.LastIncludedIndex,
 	}
-	rf.CommitIndex = rf.LastIncludedIndex + 1
-	rf.LastApplied = rf.LastIncludedIndex
-	DPrintf("[InstallSnapshot]%v set LastApplied=%v, CommitIndex=%v\n", rf.me, rf.LastApplied, rf.CommitIndex)
-	rf.Unlock()
-	rf.ApplyCh <- msg
-	rf.Lock()
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -283,6 +281,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	rf.VotedFor = &args.CandidateID
+	rf.CurrentTerm = args.Term
+	rf.LeaderID = -1
 	rf.ElectionTimer = time.Now()
 
 	reply.VoteGranted = true
@@ -439,76 +439,393 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	rf.Lock()
 	rf.Log = append(rf.Log, Entry{Entry: command, Term: term})
-	currentTerm := rf.CurrentTerm
+	//currentTerm := rf.CurrentTerm
 	logIdx := len(rf.Log) + rf.LastIncludedIndex
 	rf.persist()
 	rf.Unlock()
-	ch := make(chan AppendEntriesEnum, len(rf.peers))
+	//ch := make(chan AppendEntriesEnum, len(rf.peers))
 	//  先收到过半回复才return，再commit
-	if !rf.sendAppendEntriesToAllServer(logIdx, currentTerm, ch) {
-		return logIdx - 1, term, isLeader
-	}
-	rf.checkCommitIndexAndUpdate(logIdx)
+	//if !rf.sendAppendEntriesToAllServer(logIdx, currentTerm, ch) {
+
+	//if !rf.sendAppendEntries2() {
+	//	return logIdx - 1, term, isLeader
+	//}
+	//rf.checkCommitIndexAndUpdate(logIdx)
 	return logIdx - 1, term, isLeader
 }
 
-func (rf *Raft) sendAppendEntriesToAllServer(logIdx, currentTerm int, ch chan AppendEntriesEnum) bool {
+//func (rf *Raft) sendAppendEntriesToAllServer(logIdx, currentTerm int, ch chan AppendEntriesEnum) bool {
+//	for server := range rf.peers {
+//		if server == rf.me {
+//			continue
+//		}
+//		go func(server int) {
+//			ch <- rf.syncToServer(server, logIdx, currentTerm)
+//		}(server)
+//	}
+//	done := time.Tick(time.Second)
+//	ok := false
+//	cnt := 0
+//	for !ok {
+//		select {
+//		case v := <-ch:
+//			switch v {
+//			case AppendEntriesEnumDisconnect:
+//			case AppendEntriesEnumBiggerTerm:
+//				cnt = -1
+//			case AppendEntriesEnumSuccess:
+//				cnt += 1
+//			}
+//			if 2*(cnt+1) >= len(rf.peers) || cnt == -1 {
+//				break
+//			}
+//		case <-done:
+//			ok = true
+//		default:
+//			if cnt == -1 || 2*(cnt+1) >= len(rf.peers) {
+//				ok = true
+//			}
+//		}
+//	}
+//	if 2*(cnt+1) < len(rf.peers) {
+//		DPrintf("id=%v lose leader cnt=%v\n", rf.me, cnt)
+//		rf.Lock()
+//		rf.LeaderID = -1
+//		rf.Unlock()
+//		return false
+//	}
+//	return true
+//}
+//
+//func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum {
+//	start := time.Now()
+//	for time.Since(start).Seconds() < 0.5 {
+//		rf.Lock()
+//		if rf.CurrentTerm > currentTerm || rf.LeaderID != rf.me {
+//			rf.Unlock()
+//			return AppendEntriesEnumBiggerTerm
+//		}
+//		id := rf.NextIndex[server]
+//		if id > logIdx {
+//			rf.Unlock()
+//			DPrintf("[syncToServer]id > logIdx\n")
+//			return AppendEntriesEnumSuccess
+//		}
+//		if id <= rf.LastIncludedIndex {
+//			args := &InstallSnapshotArgs{
+//				Term:              rf.CurrentTerm,
+//				LeaderID:          rf.me,
+//				LastIncludedIndex: rf.LastIncludedIndex,
+//				LastIncludedTerm:  rf.LastIncludedTerm,
+//				Offset:            0,
+//				Data:              rf.SnapshotList,
+//				Done:              true,
+//			}
+//			reply := &InstallSnapshotReply{}
+//			rf.Unlock()
+//			if !rf.sendInstallSnapshot(server, args, reply) {
+//				DPrintf("[syncToServer]%v->%v sendInstallSnapshot not ok\n", rf.me, server)
+//				return AppendEntriesEnumDisconnect
+//			}
+//			if reply.Term > currentTerm {
+//				rf.Lock()
+//				if rf.CurrentTerm < reply.Term {
+//					rf.receiveBiggerTerm(reply.Term)
+//				}
+//				rf.Unlock()
+//				return AppendEntriesEnumBiggerTerm
+//			}
+//			rf.Lock()
+//			if rf.NextIndex[server] < args.LastIncludedIndex+1 {
+//				rf.NextIndex[server] = args.LastIncludedIndex + 1
+//			}
+//			if rf.MatchIndex[server] < args.LastIncludedIndex+1 {
+//				rf.MatchIndex[server] = args.LastIncludedIndex + 1
+//			}
+//			rf.Unlock()
+//			return AppendEntriesEnumDisconnect
+//		}
+//		if logIdx <= rf.LastIncludedIndex {
+//			rf.Unlock()
+//			DPrintf("[syncToServer]logIdx <= rf.LastIncludedIndex\n")
+//			return AppendEntriesEnumSuccess
+//		}
+//
+//		prevLogIndex := id - 1
+//		prevLogTerm := rf.LastIncludedTerm
+//		if prevLogIndex > rf.LastIncludedIndex {
+//			prevLogTerm = rf.Log[prevLogIndex-rf.LastIncludedIndex].Term
+//		}
+//		sd := make([]Entry, (logIdx-rf.LastIncludedIndex)-(id-rf.LastIncludedIndex))
+//		copy(sd, rf.Log[id-rf.LastIncludedIndex:logIdx-rf.LastIncludedIndex])
+//		args := &AppendEntriesArgs{
+//			Term:     rf.CurrentTerm,
+//			LeaderID: rf.LeaderID,
+//
+//			PrevLogIndex: prevLogIndex,
+//			PrevLogTerm:  prevLogTerm,
+//			Entries:      sd, // TODO lock前压缩了怎么办
+//			LeaderCommit: rf.CommitIndex,
+//		}
+//		rf.Unlock()
+//
+//		reply := &AppendEntriesReply{}
+//		for time.Since(start).Seconds() < 0.5 {
+//			if !rf.sendAppendEntries(server, args, reply) {
+//				continue
+//			}
+//			if reply.Term > currentTerm {
+//				rf.Lock()
+//				if rf.CurrentTerm < reply.Term {
+//					rf.receiveBiggerTerm(reply.Term)
+//				}
+//				rf.Unlock()
+//				return AppendEntriesEnumBiggerTerm
+//			} else if reply.Success {
+//				rf.Lock()
+//				if rf.NextIndex[server] < logIdx {
+//					rf.NextIndex[server] = logIdx
+//				}
+//				if rf.MatchIndex[server] < logIdx {
+//					rf.MatchIndex[server] = logIdx
+//				}
+//				rf.Unlock()
+//				return AppendEntriesEnumSuccess
+//			}
+//			break
+//		}
+//		if time.Since(start).Seconds() >= 0.5 {
+//			break
+//		}
+//		rf.Lock()
+//		if rf.NextIndex[server] <= 1 {
+//			rf.Unlock()
+//			return AppendEntriesEnumDisconnect
+//		}
+//		// TODO
+//		rf.NextIndex[server] -= 1
+//		//rf.NextIndex[server] = 1
+//		rf.Unlock()
+//	}
+//	return AppendEntriesEnumDisconnect
+//}
+
+type RequestVoteStruct struct {
+	Status RequestVoteEnum
+	Term   int
+}
+
+func (rf *Raft) election() {
+	for rf.killed() == false {
+		time.Sleep(time.Duration(10+rand.Int()%10) * time.Millisecond)
+		func() {
+			rf.Lock()
+			if rf.me == rf.LeaderID {
+				rf.Unlock()
+				return
+			}
+			if !rf.expired() {
+				rf.Unlock()
+				return
+			}
+			rf.CurrentTerm += 1
+			ct := rf.CurrentTerm
+			rf.VotedFor = &rf.me
+			rf.ElectionTimer = time.Now()
+			LastLogIndex := rf.LastIncludedIndex
+			LastLogTerm := rf.LastIncludedTerm
+			if len(rf.Log) > 1 {
+				LastLogIndex += len(rf.Log) - 1
+				LastLogTerm = rf.Log[len(rf.Log)-1].Term
+			}
+			args := &RequestVoteArgs{
+				Term:         ct,
+				CandidateID:  rf.me,
+				LastLogIndex: LastLogIndex,
+				LastLogTerm:  LastLogTerm,
+			}
+			rf.Unlock()
+			DPrintf("[Election]id=%v start an election\n", rf.me)
+
+			ch := make(chan RequestVoteStruct, len(rf.peers))
+			for server := range rf.peers {
+				if server == rf.me {
+					continue
+				}
+				go func(server int) {
+					reply := &RequestVoteReply{}
+					if !rf.sendRequestVote(server, args, reply) {
+						ch <- RequestVoteStruct{Status: RequestVoteEnumDisConnect}
+						return
+					}
+					status := RequestVoteEnumLose
+					if reply.VoteGranted {
+						status = RequestVoteEnumGrant
+					} else {
+						rf.Lock()
+						if rf.CurrentTerm < reply.Term {
+							rf.receiveBiggerTerm(reply.Term)
+							status = RequestVoteEnumBiggerTerm
+						}
+						rf.Unlock()
+					}
+					ch <- RequestVoteStruct{Status: status, Term: reply.Term}
+				}(server)
+			}
+			grant := 0
+			receive := 0
+			for i := 1; i < len(rf.peers); i++ {
+				v := <-ch
+				switch v.Status {
+				case RequestVoteEnumGrant:
+					grant += 1
+					receive += 1
+				case RequestVoteEnumLose:
+					receive += 1
+				case RequestVoteEnumDisConnect:
+				case RequestVoteEnumBiggerTerm:
+					grant = -1
+				}
+				if grant == -1 || 2*(grant+1) > len(rf.peers) || 2*(grant+1+len(rf.peers)-i-1) < len(rf.peers) {
+					break
+				}
+			}
+			rf.Lock()
+			defer rf.Unlock()
+			if ct != rf.CurrentTerm {
+				DPrintf("[Election]id=%v, ct != rf.CurrentTerm\n", rf.me)
+				return
+			}
+			if 2*(receive+1) < len(rf.peers) {
+				DPrintf("[Election]id=%v, connection error\n", rf.me)
+				rf.CurrentTerm -= 1
+				rf.VotedFor = nil
+				return
+			}
+			if 2*(grant+1) < len(rf.peers) {
+				DPrintf("[Election]id=%v, not enough vote\n", rf.me)
+				return
+			}
+			DPrintf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
+			rf.LeaderID = rf.me
+			rf.NextIndex = make([]int, len(rf.peers))
+			rf.MatchIndex = make([]int, len(rf.peers))
+			for i := range rf.peers {
+				rf.NextIndex[i] = rf.CommitIndex
+				rf.MatchIndex[i] = 0
+			}
+		}()
+	}
+}
+
+type AppendEntriesResult struct {
+	Server            int
+	Status            AppendEntriesEnum
+	Term              int
+	LastIncludedIndex int
+}
+
+func (rf *Raft) heartBeat() {
+	for rf.killed() == false {
+		time.Sleep(time.Duration(50) * time.Millisecond)
+
+		rf.Lock()
+		if rf.me != rf.LeaderID {
+			rf.Unlock()
+			continue
+		}
+		for server := range rf.peers {
+			if server == rf.me {
+				continue
+			}
+			id := rf.NextIndex[server]
+			//if id <= rf.LastIncludedIndex {
+			//	args := &InstallSnapshotArgs{
+			//		Term:              rf.CurrentTerm,
+			//		LeaderID:          rf.me,
+			//		LastIncludedIndex: rf.LastIncludedIndex,
+			//		LastIncludedTerm:  rf.LastIncludedTerm,
+			//		Offset:            0,
+			//		Data:              rf.SnapshotList,
+			//		Done:              true,
+			//	}
+			//	reply := &InstallSnapshotReply{}
+			//	go func() {
+			//		if !rf.sendInstallSnapshot(server, args, reply) {
+			//			DPrintf("[syncToServer]%v->%v sendInstallSnapshot not ok\n", rf.me, server)
+			//			return
+			//		}
+			//		rf.Lock()
+			//		if rf.CurrentTerm < reply.Term {
+			//			rf.receiveBiggerTerm(reply.Term)
+			//		} else {
+			//			if rf.NextIndex[server] < rf.LastIncludedIndex+1 {
+			//				rf.NextIndex[server] = rf.LastIncludedIndex+1
+			//			}
+			//		}
+			//		rf.Unlock()
+			//	}()
+			//} else {
+			prevLogIndex := id - 1
+			prevLogTerm := rf.LastIncludedTerm
+			if prevLogIndex > rf.LastIncludedIndex {
+				prevLogTerm = rf.Log[prevLogIndex-rf.LastIncludedIndex].Term
+			}
+			logIdx := len(rf.Log) + rf.LastIncludedIndex
+			sd := make([]Entry, logIdx-id)
+			copy(sd, rf.Log[id-rf.LastIncludedIndex:logIdx-rf.LastIncludedIndex])
+			args := &AppendEntriesArgs{
+				Term:     rf.CurrentTerm,
+				LeaderID: rf.LeaderID,
+
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      sd, // TODO lock前压缩了怎么办
+				LeaderCommit: rf.CommitIndex,
+			}
+			reply := &AppendEntriesReply{}
+
+			go func(server int) {
+				if !rf.sendAppendEntries(server, args, reply) {
+					return
+				}
+				rf.Lock()
+				defer rf.Unlock()
+				if reply.Success {
+					if rf.NextIndex[server] < logIdx {
+						rf.NextIndex[server] = logIdx
+						rf.MatchIndex[server] = rf.NextIndex[server] - 1
+						rf.checkNextIndexList()
+					}
+				} else {
+					if rf.CurrentTerm < reply.Term {
+						rf.receiveBiggerTerm(reply.Term)
+					} else {
+						if rf.NextIndex[server] > 1 {
+							rf.NextIndex[server] -= 1
+						}
+					}
+				}
+			}(server)
+			//}
+		}
+		rf.Unlock()
+	}
+
+}
+
+func (rf *Raft) sendAppendEntries2() bool {
+	rf.Lock()
+	if rf.me != rf.LeaderID {
+		rf.Unlock()
+		return false
+	}
+	ch := make(chan AppendEntriesResult, len(rf.peers))
 	for server := range rf.peers {
 		if server == rf.me {
 			continue
 		}
-		go func(server int) {
-			ch <- rf.syncToServer(server, logIdx, currentTerm)
-		}(server)
-	}
-	done := time.Tick(time.Second)
-	ok := false
-	cnt := 0
-	for !ok {
-		select {
-		case v := <-ch:
-			switch v {
-			case AppendEntriesEnumDisconnect:
-			case AppendEntriesEnumBiggerTerm:
-				cnt = -1
-			case AppendEntriesEnumSuccess:
-				cnt += 1
-			}
-			if 2*(cnt+1) >= len(rf.peers) || cnt == -1 {
-				break
-			}
-		case <-done:
-			ok = true
-		default:
-			if cnt == -1 || 2*(cnt+1) >= len(rf.peers) {
-				ok = true
-			}
-		}
-	}
-	if 2*(cnt+1) < len(rf.peers) {
-		DPrintf("id=%v lose leader cnt=%v\n", rf.me, cnt)
-		rf.Lock()
-		rf.LeaderID = -1
-		rf.Unlock()
-		return false
-	}
-	return true
-}
-
-func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum {
-	start := time.Now()
-	for time.Since(start).Seconds() < 0.5 {
-		rf.Lock()
-		if rf.CurrentTerm > currentTerm || rf.LeaderID != rf.me {
-			rf.Unlock()
-			return AppendEntriesEnumBiggerTerm
-		}
 		id := rf.NextIndex[server]
-		if id > logIdx {
-			rf.Unlock()
-			DPrintf("[syncToServer]id > logIdx\n")
-			return AppendEntriesEnumSuccess
-		}
 		if id <= rf.LastIncludedIndex {
 			args := &InstallSnapshotArgs{
 				Term:              rf.CurrentTerm,
@@ -520,138 +837,100 @@ func (rf *Raft) syncToServer(server, logIdx, currentTerm int) AppendEntriesEnum 
 				Done:              true,
 			}
 			reply := &InstallSnapshotReply{}
-			rf.Unlock()
-			if !rf.sendInstallSnapshot(server, args, reply) {
-				DPrintf("[syncToServer]%v->%v sendInstallSnapshot not ok\n", rf.me, server)
-				return AppendEntriesEnumDisconnect
-			}
-			if reply.Term > currentTerm {
-				rf.Lock()
-				if rf.CurrentTerm < reply.Term {
-					rf.receiveBiggerTerm(reply.Term)
+			go func() {
+				if !rf.sendInstallSnapshot(server, args, reply) {
+					DPrintf("[syncToServer]%v->%v sendInstallSnapshot not ok\n", rf.me, server)
+					ch <- AppendEntriesResult{Status: AppendEntriesEnumDisconnect}
+					return
 				}
-				rf.Unlock()
-				return AppendEntriesEnumBiggerTerm
-			}
-			rf.Lock()
-			if rf.NextIndex[server] < args.LastIncludedIndex+1 {
-				rf.NextIndex[server] = args.LastIncludedIndex + 1
-			}
-			if rf.MatchIndex[server] < args.LastIncludedIndex+1 {
-				rf.MatchIndex[server] = args.LastIncludedIndex + 1
-			}
-			rf.Unlock()
-			return AppendEntriesEnumDisconnect
-		}
-		if logIdx <= rf.LastIncludedIndex {
-			rf.Unlock()
-			DPrintf("[syncToServer]logIdx <= rf.LastIncludedIndex\n")
-			return AppendEntriesEnumSuccess
-		}
+				ch <- AppendEntriesResult{Server: server, Status: AppendEntriesEnumSuccess, Term: reply.Term, LastIncludedIndex: args.LastIncludedIndex}
 
-		prevLogIndex := id - 1
-		prevLogTerm := rf.LastIncludedTerm
-		if prevLogIndex > rf.LastIncludedIndex {
-			prevLogTerm = rf.Log[prevLogIndex-rf.LastIncludedIndex].Term
-		}
-		args := &AppendEntriesArgs{
-			Term:     rf.CurrentTerm,
-			LeaderID: rf.LeaderID,
-
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Entries:      rf.Log[id-rf.LastIncludedIndex : logIdx-rf.LastIncludedIndex], // TODO lock前压缩了怎么办
-			LeaderCommit: rf.CommitIndex,
-		}
-		rf.Unlock()
-
-		reply := &AppendEntriesReply{}
-		for time.Since(start).Seconds() < 0.5 {
-			if !rf.sendAppendEntries(server, args, reply) {
-				continue
-			}
-			if reply.Term > currentTerm {
-				rf.Lock()
-				if rf.CurrentTerm < reply.Term {
-					rf.receiveBiggerTerm(reply.Term)
-				}
-				rf.Unlock()
-				return AppendEntriesEnumBiggerTerm
-			} else if reply.Success {
-				rf.Lock()
-				if rf.NextIndex[server] < logIdx {
-					rf.NextIndex[server] = logIdx
-				}
-				if rf.MatchIndex[server] < logIdx {
-					rf.MatchIndex[server] = logIdx
-				}
-				rf.Unlock()
-				return AppendEntriesEnumSuccess
-			}
-			break
-		}
-		if time.Since(start).Seconds() >= 0.5 {
-			break
-		}
-		rf.Lock()
-		if rf.NextIndex[server] <= 1 {
-			rf.Unlock()
-			return AppendEntriesEnumDisconnect
-		}
-		// TODO
-		rf.NextIndex[server] -= 1
-		//rf.NextIndex[server] = 1
-		rf.Unlock()
-	}
-	return AppendEntriesEnumDisconnect
-}
-
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-
-		// Your code here (2A)
-		// Check if a leader election should be started.
-
-		_, isLeader := rf.GetState()
-		if isLeader {
-			rf.heartBeat()
+			}()
 		} else {
-			stop := false
-			for !stop {
-				switch rf.checkExpiredAndElection() {
-				case UnExpired:
-					stop = true
-				case NotEnoughVote:
-					ms := rand.Int63() % 50
-					time.Sleep(time.Duration(ms) * time.Millisecond)
-				case DisConnect, HaveBiggerTerm:
-					ms := rand.Int63() % 80
-					time.Sleep(time.Duration(ms) * time.Millisecond)
-				case Success:
-					rf.heartBeat()
-					stop = true
-				}
+			prevLogIndex := id - 1
+			prevLogTerm := rf.LastIncludedTerm
+			if prevLogIndex > rf.LastIncludedIndex {
+				prevLogTerm = rf.Log[prevLogIndex-rf.LastIncludedIndex].Term
 			}
+			logIdx := len(rf.Log) + rf.LastIncludedIndex
+			sd := make([]Entry, logIdx-id)
+			copy(sd, rf.Log[id-rf.LastIncludedIndex:logIdx-rf.LastIncludedIndex])
+			args := &AppendEntriesArgs{
+				Term:     rf.CurrentTerm,
+				LeaderID: rf.LeaderID,
+
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      sd, // TODO lock前压缩了怎么办
+				LeaderCommit: rf.CommitIndex,
+			}
+			reply := &AppendEntriesReply{}
+
+			go func(server int) {
+				if !rf.sendAppendEntries(server, args, reply) {
+					ch <- AppendEntriesResult{Status: AppendEntriesEnumDisconnect}
+					return
+				}
+				status := AppendEntriesEnumFail
+				rf.Lock()
+				defer rf.Unlock()
+				if reply.Success {
+					status = AppendEntriesEnumSuccess
+					if rf.NextIndex[server] < logIdx {
+						rf.NextIndex[server] = logIdx
+						rf.MatchIndex[server] = rf.NextIndex[server] - 1
+					}
+				} else {
+					if rf.CurrentTerm < reply.Term {
+						rf.receiveBiggerTerm(reply.Term)
+						status = AppendEntriesEnumBiggerTerm
+					} else {
+						if rf.NextIndex[server] > 1 {
+							rf.NextIndex[server] -= 1
+						}
+					}
+
+				}
+				ch <- AppendEntriesResult{Server: server, Status: status, Term: reply.Term, LastIncludedIndex: logIdx}
+			}(server)
 		}
 	}
-}
-
-func (rf *Raft) heartBeat() {
-	ch := make(chan AppendEntriesEnum, len(rf.peers))
-	DPrintf("[heartBeat]%v begin to acquire lock for heartbeat\n", rf.me)
-	rf.Lock()
-	logLen := len(rf.Log) + rf.LastIncludedIndex
-	currentTerm := rf.CurrentTerm
 	rf.Unlock()
-	if !rf.sendAppendEntriesToAllServer(logLen, currentTerm, ch) {
-		return
+	success := 0
+	nextIndexList := make([]int, 0)
+	for i := 1; i < len(rf.peers); i++ {
+		v := <-ch
+		switch v.Status {
+		case AppendEntriesEnumSuccess:
+			success += 1
+			nextIndexList = append(nextIndexList, v.LastIncludedIndex)
+		case AppendEntriesEnumFail:
+		case AppendEntriesEnumBiggerTerm:
+			success = -1
+		}
+		if success == -1 || 2*(success+1) > len(rf.peers) {
+			break
+		}
 	}
-	rf.checkCommitIndexAndUpdate(logLen)
+	if success == -1 {
+		DPrintf("[sendAppendEntries2]id=%v receive bigger term\n", rf.me)
+		rf.Lock()
+		rf.LeaderID = -1
+		rf.Unlock()
+		return false
+	}
+	if 2*(success+1) < len(rf.peers) {
+		DPrintf("[sendAppendEntries2]id=%v lose leader cnt=%v\n", rf.me, success)
+		//rf.Lock()
+		//rf.LeaderID = -1
+		//rf.Unlock()
+		return false
+	}
+	sort.Slice(nextIndexList, func(i, j int) bool {
+		return nextIndexList[i] > nextIndexList[j]
+	})
+	rf.checkCommitIndexAndUpdate(nextIndexList[len(rf.peers)/2-1])
+	return true
 }
 
 func (rf *Raft) checkCommitIndexAndUpdate(logIdx int) {
@@ -677,112 +956,38 @@ func (rf *Raft) checkCommitIndexAndUpdate(logIdx int) {
 	}()
 }
 
-func (rf *Raft) expired() bool {
-	//return rf.LeaderID == -1 || time.Since(rf.ElectionTimer) > (time.Duration((rand.Int63()%150)+350)*time.Millisecond)
-	return time.Since(rf.ElectionTimer) > (time.Duration((rand.Int63()%150)+350) * time.Millisecond)
-}
-
-func (rf *Raft) checkExpiredAndElection() ElectionResult {
-	rf.Lock()
-	if !rf.expired() {
-		rf.Unlock()
-		return UnExpired
-	}
-	rf.CurrentTerm += 1
-	ct := rf.CurrentTerm
-	rf.VotedFor = &rf.me
-	rf.ElectionTimer = time.Now()
-	LastLogIndex := rf.LastIncludedIndex
-	LastLogTerm := rf.LastIncludedTerm
-	if len(rf.Log) > 1 {
-		LastLogIndex += len(rf.Log) - 1
-		LastLogTerm = rf.Log[len(rf.Log)-1].Term
-	}
-	args := &RequestVoteArgs{
-		Term:         ct,
-		CandidateID:  rf.me,
-		LastLogIndex: LastLogIndex,
-		LastLogTerm:  LastLogTerm,
-	}
-	rf.Unlock()
-	DPrintf("[Election]id=%v start an election\n", rf.me)
-
-	ch := make(chan RequestVoteEnum, len(rf.peers))
-	for server := range rf.peers {
+func (rf *Raft) checkNextIndexList() {
+	nextIndexList := make([]int, 0, len(rf.peers))
+	for server := range rf.MatchIndex {
 		if server == rf.me {
 			continue
 		}
-		go func(server int) {
-			reply := &RequestVoteReply{}
-			if !rf.sendRequestVote(server, args, reply) {
-				ch <- RequestVoteEnumDisConnect
-				return
-			}
-			if reply.VoteGranted {
-				ch <- RequestVoteEnumGrant
-			} else {
-				rf.Lock()
-				if reply.Term > rf.CurrentTerm {
-					rf.receiveBiggerTerm(reply.Term)
-					ch <- RequestVoteEnumBiggerTerm
-				} else {
-					ch <- RequestVoteEnumLose
-				}
-				rf.Unlock()
-			}
-		}(server)
+		nextIndexList = append(nextIndexList, rf.MatchIndex[server])
 	}
-	rec := 0
-	grant := 0
-	done := time.Tick(time.Second)
-	ok := false
-	for !ok {
-		select {
-		case v := <-ch:
-			switch v {
-			case RequestVoteEnumGrant:
-				grant += 1
-				rec += 1
-			case RequestVoteEnumLose:
-				rec += 1
-			case RequestVoteEnumDisConnect:
-
-			case RequestVoteEnumBiggerTerm:
-				grant = -1
-			}
-		case <-done:
-			ok = true
-		default:
-			if grant == -1 || 2*(grant+1) >= len(rf.peers) {
-				ok = true
-			}
+	sort.Slice(nextIndexList, func(i, j int) bool {
+		return nextIndexList[i] > nextIndexList[j]
+	})
+	func(logIdx int) {
+		if logIdx-1 <= rf.LastIncludedIndex {
+			return
 		}
-	}
-	rf.Lock()
-	defer rf.Unlock()
-	if ct != rf.CurrentTerm {
-		DPrintf("[Election]id=%v, ct != rf.CurrentTerm\n", rf.me)
-		return HaveBiggerTerm
-	}
-	if 2*(rec+1) < len(rf.peers) {
-		DPrintf("[Election]id=%v, connection error\n", rf.me)
-		rf.CurrentTerm -= 1
-		rf.VotedFor = nil
-		return DisConnect
-	}
-	if 2*(grant+1) < len(rf.peers) {
-		DPrintf("[Election]id=%v, not enough vote\n", rf.me)
-		return NotEnoughVote
-	}
-	DPrintf("[Election]aha~ id=%v\n", rf.me)
-	rf.LeaderID = rf.me
-	rf.NextIndex = make([]int, len(rf.peers))
-	rf.MatchIndex = make([]int, len(rf.peers))
-	for i := range rf.peers {
-		rf.NextIndex[i] = rf.CommitIndex
-		rf.MatchIndex[i] = 0
-	}
-	return Success
+		if rf.LeaderID != rf.me {
+			return
+		}
+		if rf.Log[logIdx-1-rf.LastIncludedIndex].Term != rf.CurrentTerm {
+			return
+		}
+		if logIdx > rf.CommitIndex {
+			rf.CommitIndex = logIdx
+			rf.persist()
+			rf.applyLog()
+		}
+	}(nextIndexList[len(rf.peers)/2-1] + 1)
+}
+
+func (rf *Raft) expired() bool {
+	//return rf.LeaderID == -1 || time.Since(rf.ElectionTimer) > (time.Duration((rand.Int63()%150)+350)*time.Millisecond)
+	return time.Since(rf.ElectionTimer) > (time.Duration((rand.Int63()%150)+350) * time.Millisecond)
 }
 
 func (rf *Raft) receiveBiggerTerm(term int) {
@@ -793,8 +998,7 @@ func (rf *Raft) receiveBiggerTerm(term int) {
 
 func (rf *Raft) applyLogRoutine() {
 	for {
-		v := <-rf.ApplyCh2
-		rf.ApplyCh <- v
+		rf.ApplyCh <- <-rf.ApplyCh2
 	}
 }
 
@@ -843,7 +1047,20 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.SnapshotList = persister.ReadSnapshot()
 	DPrintf("[Make]%v restore from persist %+v\n", rf.me, rf)
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	//go rf.ticker()
+	go rf.heartBeat()
+	go rf.election()
 	go rf.applyLogRoutine()
+
+	//cond := sync.NewCond(&rf.mu)
 	return rf
+}
+
+func (rf *Raft) Print() {
+	for {
+		time.Sleep(time.Millisecond * 50)
+		rf.Lock()
+		DPrintf("[Print]%v: %+v", rf.me, rf)
+		rf.Unlock()
+	}
 }
