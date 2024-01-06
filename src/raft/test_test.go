@@ -1293,7 +1293,6 @@ func TestSnapshotInstallCrash2D(t *testing.T) {
 	snapcommon(t, "Test (2D): install snapshots (crash)", false, true, true)
 }
 
-// TODO
 func TestSnapshotInstallUnCrash2D(t *testing.T) {
 	snapcommon(t, "Test (2D): install snapshots (unreliable+crash)", false, false, true)
 }
@@ -1301,7 +1300,6 @@ func TestSnapshotInstallUnCrash2D(t *testing.T) {
 // do the servers persist the snapshots, and
 // restart using snapshot along with the
 // tail of the log?
-// TODO
 func TestSnapshotAllCrash2D(t *testing.T) {
 	servers := 3
 	iters := 5

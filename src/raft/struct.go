@@ -51,6 +51,7 @@ type Raft struct {
 	MatchIndex  []int   // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 	ApplyCh     chan ApplyMsg
 	ApplyCh2    chan ApplyMsg
+	SyncLock    []sync.Mutex
 	//ApplyLock   sync.Mutex
 	//ApplyCond   *sync.Cond
 	//ApplyQueue  []ApplyMsg
