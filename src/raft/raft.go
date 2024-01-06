@@ -223,7 +223,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.CommitIndex = rf.LastIncludedIndex + 1
 	rf.LastApplied = rf.LastIncludedIndex
 	DPrintf("[InstallSnapshot]%v set LastApplied=%v, CommitIndex=%v\n", rf.me, rf.LastApplied, rf.CommitIndex)
-	rf.ApplyCh2 <- ApplyMsg{
+	rf.ApplyCh <- ApplyMsg{
 		SnapshotValid: true,
 		Snapshot:      rf.SnapshotList,
 		SnapshotTerm:  rf.LastIncludedTerm,
@@ -338,7 +338,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		reply.Term = rf.CurrentTerm
 		rf.persist()
-		rf.applyLog()
+		//rf.applyLog()
 		rf.Unlock()
 	}()
 	// 1. Reply false if term < currentTerm (§5.1)
@@ -693,7 +693,7 @@ func (rf *Raft) checkNextIndexList() {
 		if logIdx > rf.CommitIndex {
 			rf.CommitIndex = logIdx
 			rf.persist()
-			rf.applyLog()
+			//rf.applyLog()
 		}
 	}(matchIndexList[len(rf.peers)/2-1] + 1)
 }
@@ -710,24 +710,48 @@ func (rf *Raft) receiveBiggerTerm(term int) {
 }
 
 func (rf *Raft) applyLogRoutine() {
-	for {
-		rf.ApplyCh <- <-rf.ApplyCh2
+	for rf.killed() == false {
+		time.Sleep(time.Duration(50) * time.Millisecond)
+		v := make([]ApplyMsg, 0)
+		rf.Lock()
+		for rf.LastApplied+1 < rf.CommitIndex {
+			rf.LastApplied += 1
+			DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
+			v = append(v, ApplyMsg{
+				CommandValid: true,
+				Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,
+				CommandIndex: rf.LastApplied,
+			})
+		}
+		rf.Unlock()
+		for i := range v {
+			rf.ApplyCh <- v[i]
+		}
 	}
 }
 
 // with lock previous
 func (rf *Raft) applyLog() {
+	v := make([]ApplyMsg, 0)
 	for rf.LastApplied+1 < rf.CommitIndex {
 		rf.LastApplied += 1
 		DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
-		//msg :=
-		rf.ApplyCh2 <- ApplyMsg{
+		//rf.ApplyCh2 <- ApplyMsg{
+		//	CommandValid: true,
+		//	Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,
+		//	CommandIndex: rf.LastApplied,
+		//}
+		v = append(v, ApplyMsg{
 			CommandValid: true,
 			Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,
 			CommandIndex: rf.LastApplied,
-		}
-		//rf.ApplyQueue = append(rf.ApplyQueue, msg)
+		})
 	}
+	go func() {
+		for i := range v {
+			rf.ApplyCh <- v[i]
+		}
+	}()
 }
 
 // Make the service or tester wants to create a Raft server. the ports
