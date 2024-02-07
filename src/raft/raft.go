@@ -556,6 +556,7 @@ func (rf *Raft) election() {
 				DPrintf("[Election]id=%v, not enough vote\n", rf.me)
 				return
 			}
+			fmt.Printf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
 			DPrintf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
 			rf.LeaderID = rf.me
 			rf.NextIndex = make([]int, len(rf.peers))
@@ -730,30 +731,6 @@ func (rf *Raft) applyLogRoutine() {
 	}
 }
 
-// with lock previous
-func (rf *Raft) applyLog() {
-	v := make([]ApplyMsg, 0)
-	for rf.LastApplied+1 < rf.CommitIndex {
-		rf.LastApplied += 1
-		DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
-		//rf.ApplyCh2 <- ApplyMsg{
-		//	CommandValid: true,
-		//	Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,
-		//	CommandIndex: rf.LastApplied,
-		//}
-		v = append(v, ApplyMsg{
-			CommandValid: true,
-			Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,
-			CommandIndex: rf.LastApplied,
-		})
-	}
-	go func() {
-		for i := range v {
-			rf.ApplyCh <- v[i]
-		}
-	}()
-}
-
 // Make the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -788,7 +765,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go rf.heartBeat()
 	go rf.election()
 	go rf.applyLogRoutine()
-
 	//cond := sync.NewCond(&rf.mu)
 	return rf
 }

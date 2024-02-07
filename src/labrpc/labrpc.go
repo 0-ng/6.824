@@ -49,7 +49,10 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "6.5840/labgob"
+import (
+	"6.5840/labgob"
+	"fmt"
+)
 import "bytes"
 import "reflect"
 import "sync"
@@ -217,6 +220,7 @@ func (rn *Network) isServerDead(endname interface{}, servername interface{}, ser
 
 func (rn *Network) processReq(req reqMsg) {
 	enabled, servername, server, reliable, longreordering := rn.readEndnameInfo(req.endname)
+	fmt.Println(enabled)
 
 	if enabled && servername != nil && server != nil {
 		if reliable == false {
@@ -287,6 +291,7 @@ func (rn *Network) processReq(req reqMsg) {
 			})
 		} else {
 			atomic.AddInt64(&rn.bytes, int64(len(reply.reply)))
+			fmt.Println("5")
 			req.replyCh <- reply
 		}
 	} else {
@@ -302,6 +307,7 @@ func (rn *Network) processReq(req reqMsg) {
 			ms = (rand.Int() % 100)
 		}
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
+			fmt.Println("6")
 			req.replyCh <- replyMsg{false, nil}
 		})
 	}
