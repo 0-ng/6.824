@@ -1,9 +1,10 @@
 package raft
 
 import (
-	"6.5840/labrpc"
 	"sync"
 	"time"
+
+	"6.5840/labrpc"
 )
 
 // ApplyMsg as each Raft peer becomes aware that successive log entries are
@@ -29,7 +30,8 @@ type ApplyMsg struct {
 
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	//mu        sync.Mutex // Lock to protect shared access to this peer's state
+	mu2       *sync.Cond
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]

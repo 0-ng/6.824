@@ -1,16 +1,19 @@
 package kvraft
 
-import "6.5840/porcupine"
-import "6.5840/models"
-import "testing"
-import "strconv"
-import "time"
-import "math/rand"
-import "strings"
-import "sync"
-import "sync/atomic"
-import "fmt"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"math/rand"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"6.5840/models"
+	"6.5840/porcupine"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -180,7 +183,9 @@ func checkConcurrentAppends(t *testing.T, v string, counts []int) {
 
 // repartition the servers periodically
 func partitioner(t *testing.T, cfg *config, ch chan bool, done *int32) {
-	defer func() { ch <- true }()
+	defer func() {
+		ch <- true
+	}()
 	for atomic.LoadInt32(done) == 0 {
 		a := make([]int, cfg.n)
 		for i := 0; i < cfg.n; i++ {
@@ -196,6 +201,7 @@ func partitioner(t *testing.T, cfg *config, ch chan bool, done *int32) {
 			}
 		}
 		cfg.partition(pa[0], pa[1])
+		DPrintf("[partitioner] pa1=%+v, pa2=%+v", pa[0], pa[1])
 		time.Sleep(electionTimeout + time.Duration(rand.Int63()%200)*time.Millisecond)
 	}
 }
@@ -209,7 +215,7 @@ func partitioner(t *testing.T, cfg *config, ch chan bool, done *int32) {
 // maxraftstate is a positive number, the size of the state for Raft (i.e., log
 // size) shouldn't exceed 8*maxraftstate. If maxraftstate is negative,
 // snapshots shouldn't be used.
-//func GenericTest(t *testing.T) {
+// func GenericTest(t *testing.T) {
 func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliable bool, crash bool, partitions bool, maxraftstate int, randomkeys bool) {
 	//part, nclients, nservers, unreliable, crash, partitions, maxraftstate, randomkeys := "3A", 1, 5, false, false, false, -1, false
 
@@ -295,6 +301,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 						t.Fatalf("get wrong value, key %v, wanted:\n%v\n, got\n%v\n", key, last, v)
 					}
 				}
+				DPrintf("done %v\n", j)
 			}
 		})
 
@@ -310,12 +317,15 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 
 		if partitions {
 			// log.Printf("wait for partitioner\n")
+			DPrintf("wait for partitioner\n")
 			<-ch_partitioner
+			DPrintf("wait for partitioner done\n")
 			// reconnect network and submit a request. A client may
 			// have submitted a request in a minority.  That request
 			// won't return until that server discovers a new term
 			// has started.
 			cfg.ConnectAll()
+			DPrintf("connect all\n")
 			// wait for a while so that we have a new term
 			time.Sleep(electionTimeout)
 		}
@@ -339,12 +349,14 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 		// log.Printf("wait for clients\n")
 		for i := 0; i < nclients; i++ {
 			// log.Printf("read from clients %d\n", i)
+			DPrintf("read from clients %d\n", i)
 			j := <-clnts[i]
 			// if j < 10 {
 			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
 			// }
 			key := strconv.Itoa(i)
 			// log.Printf("Check %v for client %d\n", j, i)
+			DPrintf("Check %v for client %d key=%v\n", j, i, key)
 			v := Get(cfg, ck, key, opLog, 0)
 			if !randomkeys {
 				checkClntAppends(t, i, v, j)
@@ -367,6 +379,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			}
 		}
 	}
+	DPrintf("now 2\n")
 
 	res, info := porcupine.CheckOperationsVerbose(models.KvModel, opLog.Read(), linearizabilityCheckTimeout)
 	if res == porcupine.Illegal {
@@ -385,6 +398,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 	} else if res == porcupine.Unknown {
 		fmt.Println("info: linearizability check timed out, assuming history is ok")
 	}
+	DPrintf("now 3\n")
 
 	cfg.end()
 }
@@ -495,8 +509,11 @@ func TestOnePartition3A(t *testing.T) {
 	ckp2a := cfg.makeClient(p2) // connect ckp2a to p2
 	ckp2b := cfg.makeClient(p2) // connect ckp2b to p2
 
+	DPrintf("1")
 	Put(cfg, ckp1, "1", "14", nil, -1)
+	DPrintf("2")
 	check(cfg, t, ckp1, "1", "14")
+	DPrintf("3")
 
 	cfg.end()
 
@@ -529,11 +546,15 @@ func TestOnePartition3A(t *testing.T) {
 
 	cfg.begin("Test: completion after heal (3A)")
 
+	DPrintf("connect all")
 	cfg.ConnectAll()
+	DPrintf("connect all 2")
 	cfg.ConnectClient(ckp2a, cfg.All())
+	DPrintf("connect all 3")
 	cfg.ConnectClient(ckp2b, cfg.All())
 
 	time.Sleep(electionTimeout)
+	DPrintf("sleep done")
 
 	select {
 	case <-done0:

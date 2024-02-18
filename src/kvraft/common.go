@@ -1,23 +1,25 @@
 package kvraft
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongLeader = "ErrWrongLeader"
+	OK             Err = "OK"
+	ErrNoKey       Err = "ErrNoKey"
+	ErrWrongLeader Err = "ErrWrongLeader"
 )
 
 const (
 	OpPUT    = "Put"
 	OpAppend = "Append"
+	OpGet    = "Get"
 )
 
 type Err string
 
 // Put or Append
 type PutAppendArgs struct {
-	Key   string `json:"key,omitempty"`
-	Value string `json:"value,omitempty"`
-	Op    string `json:"op,omitempty"` // "Put" or "Append"
+	RequestID string `json:"request_id,omitempty"`
+	Key       string `json:"key,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Op        string `json:"op,omitempty"` // "Put" or "Append"
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
@@ -28,7 +30,8 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key string `json:"key,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+	Key       string `json:"key,omitempty"`
 	// You'll have to add definitions here.
 }
 

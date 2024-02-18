@@ -6,9 +6,9 @@ import (
 )
 
 // Debugging
-const Debug = false
+//const Debug = true
 
-//const Debug = false
+const Debug = false
 
 func init() {
 	log.SetFlags(log.Ldate | log.Lmicroseconds)

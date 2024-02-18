@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"6.5840/labgob"
 	"bytes"
 	"fmt"
 	"math/rand"
@@ -27,6 +26,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"6.5840/labgob"
 
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
@@ -47,11 +48,13 @@ func (rf *Raft) test1(skip int, tp string) {
 }
 
 func (rf *Raft) Lock() {
-	rf.mu.Lock()
+	//rf.mu.Lock()
+	rf.mu2.L.Lock()
 }
 
 func (rf *Raft) Unlock() {
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
+	rf.mu2.L.Unlock()
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -146,6 +149,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.LastIncludedTerm = LastIncludedTerm
 		rf.LastApplied = rf.LastIncludedIndex
 		rf.CommitIndex = rf.LastIncludedIndex + 1
+		rf.mu2.Broadcast()
 	}
 }
 
@@ -393,6 +397,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if rf.CommitIndex < commitIndex {
 		rf.CommitIndex = commitIndex
+		rf.mu2.Broadcast()
 	}
 	rf.ElectionTimer = time.Now()
 	rf.VotedFor = nil
@@ -556,7 +561,6 @@ func (rf *Raft) election() {
 				DPrintf("[Election]id=%v, not enough vote\n", rf.me)
 				return
 			}
-			fmt.Printf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
 			DPrintf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
 			rf.LeaderID = rf.me
 			rf.NextIndex = make([]int, len(rf.peers))
@@ -566,6 +570,8 @@ func (rf *Raft) election() {
 				rf.NextIndex[i] = rf.CommitIndex
 				rf.MatchIndex[i] = 0
 			}
+			//rf.Log = append(rf.Log, Entry{Entry: struct{}{}, Term: rf.CurrentTerm})
+			//rf.persist()
 		}()
 	}
 }
@@ -579,7 +585,7 @@ type AppendEntriesResult struct {
 
 func (rf *Raft) heartBeat() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		time.Sleep(time.Duration(10) * time.Millisecond)
 
 		rf.Lock()
 		if rf.me != rf.LeaderID {
@@ -693,6 +699,7 @@ func (rf *Raft) checkNextIndexList() {
 		}
 		if logIdx > rf.CommitIndex {
 			rf.CommitIndex = logIdx
+			rf.mu2.Broadcast()
 			rf.persist()
 			//rf.applyLog()
 		}
@@ -712,9 +719,13 @@ func (rf *Raft) receiveBiggerTerm(term int) {
 
 func (rf *Raft) applyLogRoutine() {
 	for rf.killed() == false {
-		time.Sleep(time.Duration(50) * time.Millisecond)
+		//time.Sleep(time.Duration(50) * time.Millisecond)
 		v := make([]ApplyMsg, 0)
 		rf.Lock()
+		for rf.LastApplied+1 >= rf.CommitIndex {
+			rf.mu2.Wait()
+		}
+
 		for rf.LastApplied+1 < rf.CommitIndex {
 			rf.LastApplied += 1
 			DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
@@ -742,10 +753,12 @@ func (rf *Raft) applyLogRoutine() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	labgob.Register(struct{}{})
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.mu2 = sync.NewCond(&sync.Mutex{})
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.LeaderID = -1
