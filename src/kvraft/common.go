@@ -4,12 +4,21 @@ const (
 	OK             Err = "OK"
 	ErrNoKey       Err = "ErrNoKey"
 	ErrWrongLeader Err = "ErrWrongLeader"
+	ErrTimeout     Err = "ErrTimeout"
 )
 
 const (
 	OpPUT    = "Put"
 	OpAppend = "Append"
 	OpGet    = "Get"
+)
+
+type ProcessStatus int64
+
+const (
+	ProcessStatusNone       ProcessStatus = 0
+	ProcessStatusProcessing ProcessStatus = 1
+	ProcessStatusDone       ProcessStatus = 2
 )
 
 type Err string

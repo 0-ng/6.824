@@ -20,6 +20,7 @@ package raft
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"math/rand"
 	"runtime"
 	"sort"
@@ -457,6 +458,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	//	return logIdx - 1, term, isLeader
 	//}
 	//rf.checkCommitIndexAndUpdate(logIdx)
+	//log.Printf("[start] %v receive %v at %v", rf.me, command, logIdx)
 	return logIdx - 1, term, isLeader
 }
 
@@ -561,7 +563,7 @@ func (rf *Raft) election() {
 				DPrintf("[Election]id=%v, not enough vote\n", rf.me)
 				return
 			}
-			DPrintf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
+			log.Printf("[Election]aha~ id=%v term=%v\n", rf.me, rf.CurrentTerm)
 			rf.LeaderID = rf.me
 			rf.NextIndex = make([]int, len(rf.peers))
 			rf.MatchIndex = make([]int, len(rf.peers))
@@ -570,6 +572,8 @@ func (rf *Raft) election() {
 				rf.NextIndex[i] = rf.CommitIndex
 				rf.MatchIndex[i] = 0
 			}
+			rf.Log = append(rf.Log, Entry{Entry: nil, Term: rf.CurrentTerm})
+			rf.persist()
 			//rf.Log = append(rf.Log, Entry{Entry: struct{}{}, Term: rf.CurrentTerm})
 			//rf.persist()
 		}()
@@ -596,8 +600,8 @@ func (rf *Raft) heartBeat() {
 			if server == rf.me {
 				continue
 			}
-			id := rf.NextIndex[server]
-			if id <= rf.LastIncludedIndex {
+			toServerNextID := rf.NextIndex[server]
+			if toServerNextID <= rf.LastIncludedIndex {
 				args := &InstallSnapshotArgs{
 					Term:              rf.CurrentTerm,
 					LeaderID:          rf.me,
@@ -626,34 +630,36 @@ func (rf *Raft) heartBeat() {
 					}
 				}(server)
 			} else {
-				prevLogIndex := id - 1
-				prevLogTerm := rf.LastIncludedTerm
-				if prevLogIndex > rf.LastIncludedIndex {
-					prevLogTerm = rf.Log[prevLogIndex-rf.LastIncludedIndex].Term
+				toServerNowID := toServerNextID - 1
+				toServerNowTerm := rf.LastIncludedTerm
+				if toServerNowID > rf.LastIncludedIndex {
+					toServerNowTerm = rf.Log[toServerNowID-rf.LastIncludedIndex].Term
 				}
-				logIdx := len(rf.Log) + rf.LastIncludedIndex
-				sd := make([]Entry, logIdx-id)
-				copy(sd, rf.Log[id-rf.LastIncludedIndex:logIdx-rf.LastIncludedIndex])
+				myNextID := len(rf.Log) + rf.LastIncludedIndex
+				//log.Printf("[heartBeat] %v myNextID=%v", rf.me, myNextID)
+				sd := make([]Entry, myNextID-toServerNextID)
+				copy(sd, rf.Log[toServerNextID-rf.LastIncludedIndex:myNextID-rf.LastIncludedIndex])
 				args := &AppendEntriesArgs{
 					Term:     rf.CurrentTerm,
 					LeaderID: rf.LeaderID,
 
-					PrevLogIndex: prevLogIndex,
-					PrevLogTerm:  prevLogTerm,
+					PrevLogIndex: toServerNowID,
+					PrevLogTerm:  toServerNowTerm,
 					Entries:      sd, // TODO lock前压缩了怎么办
 					LeaderCommit: rf.CommitIndex,
 				}
 				reply := &AppendEntriesReply{}
 
 				go func(server int) {
+					//log.Printf("[heartBeat] %v begin to send %v idx=[%v,%v)", rf.me, server, toServerNextID,toServerNextID+len(sd))
 					if !rf.sendAppendEntries(server, args, reply) {
 						return
 					}
 					rf.Lock()
 					defer rf.Unlock()
 					if reply.Success {
-						if rf.NextIndex[server] < logIdx {
-							rf.NextIndex[server] = logIdx
+						if rf.NextIndex[server] < myNextID {
+							rf.NextIndex[server] = myNextID
 							rf.MatchIndex[server] = rf.NextIndex[server] - 1
 							rf.checkNextIndexList()
 						}
@@ -661,7 +667,7 @@ func (rf *Raft) heartBeat() {
 						if rf.CurrentTerm < reply.Term {
 							rf.receiveBiggerTerm(reply.Term)
 						} else {
-							if rf.NextIndex[server] == id && rf.NextIndex[server] > 1 {
+							if rf.NextIndex[server] == toServerNextID && rf.NextIndex[server] > 1 {
 								//rf.NextIndex[server] -= 1
 								rf.NextIndex[server] = rf.LastIncludedIndex
 							}
@@ -670,6 +676,8 @@ func (rf *Raft) heartBeat() {
 				}(server)
 			}
 		}
+
+		rf.checkNextIndexList()
 		rf.Unlock()
 
 	}
@@ -687,18 +695,23 @@ func (rf *Raft) checkNextIndexList() {
 	sort.Slice(matchIndexList, func(i, j int) bool {
 		return matchIndexList[i] > matchIndexList[j]
 	})
+	//log.Printf("[checkNextIndexList] match=[%v], next=[%v]", rf.MatchIndex, rf.NextIndex)
 	func(logIdx int) {
 		if logIdx-1 <= rf.LastIncludedIndex {
+			//log.Printf("[checkNextIndexList] skip cuz 1")
 			return
 		}
 		if rf.LeaderID != rf.me {
+			//log.Printf("[checkNextIndexList] skip cuz 2")
 			return
 		}
 		if rf.Log[logIdx-1-rf.LastIncludedIndex].Term != rf.CurrentTerm {
+			//log.Printf("[checkNextIndexList] skip cuz 3")
 			return
 		}
 		if logIdx > rf.CommitIndex {
 			rf.CommitIndex = logIdx
+			//log.Printf("[checkNextIndexList] %v begin to send commit %v", rf.me, rf.CommitIndex)
 			rf.mu2.Broadcast()
 			rf.persist()
 			//rf.applyLog()
@@ -729,6 +742,7 @@ func (rf *Raft) applyLogRoutine() {
 		for rf.LastApplied+1 < rf.CommitIndex {
 			rf.LastApplied += 1
 			DPrintf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
+			//log.Printf("[applyLog]%v begin to apply [%v:%v], commitIndex %v\n", rf.me, rf.LastApplied, rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry, rf.CommitIndex)
 			v = append(v, ApplyMsg{
 				CommandValid: true,
 				Command:      rf.Log[rf.LastApplied-rf.LastIncludedIndex].Entry,

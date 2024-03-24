@@ -43,17 +43,27 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	mp                     map[string]string
-	clientPutAppendRequest map[string]PutAppendReply
-	clientGetRequest       map[string]GetReply
-	clientRequestChannel   map[string]chan struct{}
+	mp                           map[string]string
+	clientPutAppendRequest       map[string]PutAppendReply
+	clientPutAppendRequestStatus map[string]ProcessStatus
+	clientGetRequest             map[string]GetReply
+	clientGetRequestStatus       map[string]ProcessStatus
+	clientRequestChannel         map[string]chan struct{}
 }
 
 func (kv *KVServer) Lock() {
+	DPrintf("[lock] %v lock", kv.me)
 	kv.mu.L.Lock()
+	DPrintf("[lock] %v lock success", kv.me)
 }
 func (kv *KVServer) Unlock() {
+	DPrintf("[unlock] %v unlock", kv.me)
 	kv.mu.L.Unlock()
+	DPrintf("[unlock] %v unlock success", kv.me)
+}
+
+func (kv *KVServer) Wait() {
+	kv.mu.Wait()
 }
 
 func (kv *KVServer) GetLeader(args *GetLeaderArgs, reply *GetLeaderReply) {
@@ -67,22 +77,32 @@ func (kv *KVServer) GetLeader(args *GetLeaderArgs, reply *GetLeaderReply) {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+	requestID := args.RequestID
 	start := time.Now()
 	defer func() {
-		DPrintf("[KVServer.Get] me=%v, args[%+v], reply[%+v], cost[%v]\n", kv.me, args, reply, time.Since(start))
+		DPrintf("[KVServer.Get] %v me=%v, args[%+v], reply[%+v], cost[%v]\n", requestID, kv.me, args, reply, time.Since(start))
 	}()
 	// Your code here.
 	kv.Lock()
 	// 幂等
-	if rsp, ok := kv.clientGetRequest[args.RequestID]; ok {
-		kv.Unlock()
-		reply.Value = rsp.Value
-		reply.Err = rsp.Err
-		return
+	if status := kv.clientGetRequestStatus[requestID]; status != ProcessStatusNone {
+		for kv.clientGetRequestStatus[requestID] == ProcessStatusProcessing {
+			if time.Since(start) > time.Second {
+				kv.clientGetRequestStatus[requestID] = ProcessStatusNone
+				reply.Err = ErrTimeout
+				kv.Unlock()
+				return
+			}
+			DPrintf("[KVServer.Get] %v me=%v, waiting %v\n", requestID, kv.me, args.RequestID)
+			kv.Wait()
+		}
+		if kv.clientGetRequestStatus[args.RequestID] == ProcessStatusDone {
+			reply.Value = kv.clientGetRequest[args.RequestID].Value
+			reply.Err = kv.clientGetRequest[args.RequestID].Err
+			kv.Unlock()
+			return
+		}
 	}
-	ch := make(chan struct{}, 1)
-	kv.clientRequestChannel[args.RequestID] = ch
-	kv.Unlock()
 
 	op := Op{
 		RequestID: args.RequestID,
@@ -91,30 +111,37 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		From:      kv.me,
 	}
 	// 写日志
-	_, _, isLeader := kv.rf.Start(op)
+	logID, termID, isLeader := kv.rf.Start(op)
 	if !isLeader {
+		DPrintf("[KVServer.Get] %v me=%v, starting %v, is not leader\n", requestID, kv.me, op.RequestID)
 		reply.Err = ErrWrongLeader
+		kv.Unlock()
 		return
 	}
 
+	DPrintf("[KVServer.Get] %v me=%v, starting idx=%v termID=%v\n", requestID, kv.me, logID, termID)
+	kv.clientGetRequestStatus[args.RequestID] = ProcessStatusProcessing
 	// 等结果
-	<-ch
-
-	kv.Lock()
-	defer kv.Unlock()
-	rsp, ok := kv.clientGetRequest[args.RequestID]
-	if !ok {
-		// 不应该的样子
-		panic("[KVServer.Get]")
+	for kv.clientGetRequestStatus[args.RequestID] == ProcessStatusProcessing {
+		if time.Since(start) > time.Second {
+			kv.clientGetRequestStatus[args.RequestID] = ProcessStatusNone
+			reply.Err = ErrTimeout
+			kv.Unlock()
+			return
+		}
+		DPrintf("[KVServer.Get] %v me=%v, waiting %v\n", requestID, kv.me, args.RequestID)
+		kv.Wait()
 	}
-	reply.Value = rsp.Value
-	reply.Err = rsp.Err
+	reply.Value = kv.clientGetRequest[args.RequestID].Value
+	reply.Err = kv.clientGetRequest[args.RequestID].Err
+	kv.Unlock()
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	requestID := args.RequestID
 	start := time.Now()
 	defer func() {
-		DPrintf("[KVServer.PutAppend] me=%v, args[%+v], reply[%+v], cost[%v]\n", kv.me, args, reply, time.Since(start))
+		DPrintf("[KVServer.PutAppend] %v me=%v, args[%+v], reply[%+v], cost[%v]\n", requestID, kv.me, args, reply, time.Since(start))
 	}()
 	if args.Op != OpPUT && args.Op != OpAppend {
 		reply.Err = "TODO"
@@ -123,9 +150,19 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.Lock()
 	// 幂等
-	if rsp, ok := kv.clientPutAppendRequest[args.RequestID]; ok {
+	if status := kv.clientPutAppendRequestStatus[args.RequestID]; status != ProcessStatusNone {
+		for kv.clientPutAppendRequestStatus[args.RequestID] == ProcessStatusProcessing {
+			if time.Since(start) > time.Second {
+				kv.clientPutAppendRequestStatus[args.RequestID] = ProcessStatusNone
+				reply.Err = ErrTimeout
+				kv.Unlock()
+				return
+			}
+			DPrintf("[KVServer.PutAppend] %v me=%v, waiting %v\n", requestID, kv.me, args.RequestID)
+			kv.Wait()
+		}
+		reply.Err = kv.clientPutAppendRequest[args.RequestID].Err
 		kv.Unlock()
-		reply.Err = rsp.Err
 		return
 	}
 
@@ -137,26 +174,29 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		From:      kv.me,
 	}
 	// 写日志
-	ch := make(chan struct{}, 1)
-	kv.clientRequestChannel[args.RequestID] = ch
-	kv.Unlock()
 
-	_, _, isLeader := kv.rf.Start(op)
+	logID, termID, isLeader := kv.rf.Start(op)
 	if !isLeader {
+		DPrintf("[KVServer.PutAppend] %v me=%v, starting %v, is not leader\n", requestID, kv.me, op.RequestID)
 		reply.Err = ErrWrongLeader
+		kv.Unlock()
 		return
 	}
-	<-ch
-	kv.Lock()
-	defer kv.Unlock()
-	//close(kv.clientRequestChannel[args.RequestID])
-	//delete(kv.clientRequestChannel, args.RequestID)
-	rsp, ok := kv.clientPutAppendRequest[args.RequestID]
-	if !ok {
-		// 不应该的样子
-		panic("[KVServer.PutAppend]")
+
+	DPrintf("[KVServer.PutAppend] %v me=%v, starting idx=%v termID=%v\n", requestID, kv.me, logID, termID)
+	kv.clientPutAppendRequestStatus[args.RequestID] = ProcessStatusProcessing
+	for kv.clientPutAppendRequestStatus[args.RequestID] == ProcessStatusProcessing {
+		if time.Since(start) > time.Second {
+			kv.clientPutAppendRequestStatus[args.RequestID] = ProcessStatusNone
+			reply.Err = ErrTimeout
+			kv.Unlock()
+			return
+		}
+		DPrintf("[KVServer.PutAppend] %v me=%v, waiting %v\n", requestID, kv.me, args.RequestID)
+		kv.Wait()
 	}
-	reply.Err = rsp.Err
+	reply.Err = kv.clientPutAppendRequest[args.RequestID].Err
+	kv.Unlock()
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -206,6 +246,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.clientRequestChannel = make(map[string]chan struct{})
 	kv.clientGetRequest = make(map[string]GetReply)
 	kv.clientPutAppendRequest = make(map[string]PutAppendReply)
+	kv.clientGetRequestStatus = make(map[string]ProcessStatus)
+	kv.clientPutAppendRequestStatus = make(map[string]ProcessStatus)
 
 	// You may need initialization code here.
 	go kv.applyLog()
@@ -230,6 +272,7 @@ func (kv *KVServer) applyLog() {
 					kv.clientPutAppendRequest[o.RequestID] = PutAppendReply{
 						Err: OK,
 					}
+					kv.clientPutAppendRequestStatus[o.RequestID] = ProcessStatusDone
 				}
 			case OpAppend:
 				if _, ok := kv.clientPutAppendRequest[o.RequestID]; !ok {
@@ -238,6 +281,7 @@ func (kv *KVServer) applyLog() {
 						Err: OK,
 					}
 				}
+				kv.clientPutAppendRequestStatus[o.RequestID] = ProcessStatusDone
 			case OpGet:
 				if _, ok := kv.clientGetRequest[o.RequestID]; !ok {
 					value, ok := kv.mp[o.Key]
@@ -249,12 +293,11 @@ func (kv *KVServer) applyLog() {
 						Value: value,
 						Err:   err,
 					}
+					kv.clientGetRequestStatus[o.RequestID] = ProcessStatusDone
 				}
 			}
-			if len(o.RequestID) > 0 {
-				kv.clientRequestChannel[o.RequestID] <- struct{}{}
-			}
 			kv.Unlock()
+			kv.mu.Broadcast()
 
 			DPrintf("[kvserver.ApplyLog]%v apply %+v done\n", kv.me, o)
 		}

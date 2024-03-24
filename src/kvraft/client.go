@@ -52,12 +52,14 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) (val string) {
+	requestID := ck.GenerateRequestID()
 	start := time.Now()
+	DPrintf("[Clerk.Get] %v begin to get key[%v]\n", requestID, key)
 	defer func() {
-		DPrintf("[Clerk.Get] get key[%v] val[%v], cost[%v]\n", key, val, time.Since(start))
+		DPrintf("[Clerk.Get] %v get key[%v] val[%v] done, cost[%v]\n", requestID, key, val, time.Since(start))
 	}()
 	// You will have to modify this function.
-	args := &GetArgs{Key: key, RequestID: ck.GenerateRequestID()}
+	args := &GetArgs{Key: key, RequestID: requestID}
 	reply := &GetReply{}
 	ld := ck.getLeader()
 	for {
@@ -75,6 +77,7 @@ func (ck *Clerk) Get(key string) (val string) {
 					return reply.Value
 				}
 			case <-time.Tick(time.Second):
+				DPrintf("[Clerk.Get] %v get key[%v] val[%v] from %v timeout\n", requestID, key, val, i)
 
 			}
 
@@ -93,8 +96,9 @@ func (ck *Clerk) Get(key string) (val string) {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	start := time.Now()
+	DPrintf("[Clerk.PutAppend] begin to %v key[%v]=value[%v]\n", op, key, value)
 	defer func() {
-		DPrintf("[Clerk.PutAppend] %v key[%v]=value[%v], cost[%v]\n", op, key, value, time.Since(start))
+		DPrintf("[Clerk.PutAppend] %v key[%v]=value[%v] done, cost[%v]\n", op, key, value, time.Since(start))
 	}()
 	// You will have to modify this function.
 	args := &PutAppendArgs{Key: key, Op: op, Value: value, RequestID: ck.GenerateRequestID()}
@@ -114,6 +118,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				}
 			case <-time.Tick(time.Second):
+				DPrintf("[Clerk.Put] put to %v timeout\n", i)
 
 			}
 		}
